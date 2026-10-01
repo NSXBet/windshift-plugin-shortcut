@@ -1,3 +1,3 @@
-module shortcuts
+module shortcut
 
 go 1.26

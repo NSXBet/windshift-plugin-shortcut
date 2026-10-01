@@ -150,23 +150,8 @@ func main() {
 	}
 	defer plugin.Close(ctx)
 
-	call(ctx, plugin, "GET", "/status", nil, "")
-	check("GET /status", call(ctx, plugin, "GET", "/status", nil, ""), 200, `{"kv":true,"plugin":"shortcuts","version":"0.1.0"}`)
-	check("GET /counter (1st)", call(ctx, plugin, "GET", "/counter", nil, ""), 200, `{"visits":1}`)
-	check("GET /counter (2nd, persisted)", call(ctx, plugin, "GET", "/counter", nil, ""), 200, `{"visits":2}`)
-	check("GET /bookmarks (empty)", call(ctx, plugin, "GET", "/bookmarks", nil, ""), 200, `[]`)
-	check("POST /bookmarks Linear", call(ctx, plugin, "POST", "/bookmarks", nil, `{"label":"Linear","url":"https://linear.app"}`), 201, "")
-	check("POST /bookmarks gh", call(ctx, plugin, "POST", "/bookmarks", nil, `{"label":"gh","url":"https://github.com"}`), 201, "")
-	list := call(ctx, plugin, "GET", "/bookmarks", nil, "")
-	if len(list.Body) < 50 || list.StatusCode != 200 {
-		fails++
-		fmt.Printf("FAIL list bookmarks: code=%d body=%q\n", list.StatusCode, list.Body)
-	} else {
-		fmt.Printf("PASS %-38s %d %s\n", "GET /bookmarks (2 items)", list.StatusCode, list.Body)
-	}
-	check("DELETE /bookmarks?label=Linear", call(ctx, plugin, "DELETE", "/bookmarks", map[string]string{"label": "Linear"}, ""), 200, "")
-	check("GET /bookmarks (1 item)", call(ctx, plugin, "GET", "/bookmarks", nil, ""), 200, "")
-	check("GET /unmatched route", call(ctx, plugin, "GET", "/unmatched", nil, ""), 404, "")
+	check("GET /status", call(ctx, plugin, "GET", "/status", nil, ""), 200, `{"kv":true,"plugin":"shortcut","version":"0.1.0"}`)
+	check("GET /unmatched route", call(ctx, plugin, "GET", "/unmatched", nil, ""), 404, `{"error":"route not found: GET /unmatched"}`)
 
 	if fails > 0 {
 		fmt.Printf("\n%d FAILURES\n", fails)

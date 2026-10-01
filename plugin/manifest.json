@@ -1,26 +1,22 @@
 {
-  "name": "shortcuts",
+  "name": "shortcut",
   "version": "0.1.0",
-  "description": "Sample Windshift plugin: persistent visit counter and Shortcut URL bookmarks backed by the KV host functions",
+  "description": "Shortcut → Windshift migration plugin (skeleton: liveness, KV host-function check, admin tab)",
   "author": "NSXBet",
   "entryPoint": "plugin.wasm",
   "routes": [
-    { "method": "GET", "path": "/status", "description": "Liveness + KV host-function sanity check" },
-    { "method": "GET", "path": "/counter", "description": "Increment and return the visit counter" },
-    { "method": "GET", "path": "/bookmarks", "description": "List saved Shortcut URLs" },
-    { "method": "POST", "path": "/bookmarks", "description": "Save a Shortcut URL (body: {\"label\", \"url\"})" },
-    { "method": "DELETE", "path": "/bookmarks", "description": "Delete a bookmark by ?label= query parameter" }
+    { "method": "GET", "path": "/status", "description": "Liveness + KV host-function sanity check" }
   ],
   "extensions": [
     {
       "point": "admin.tab",
-      "id": "shortcuts-plugin",
-      "label": "Shortcuts",
-      "description": "Sample plugin: visit counter and Shortcut URL bookmarks",
-      "icon": "link",
+      "id": "shortcut-plugin",
+      "label": "Shortcut Migration",
+      "description": "Shortcut → Windshift migration status",
+      "icon": "arrow-right-left",
       "component": "index.html",
-      "group": "Development",
-      "order": 200
+      "group": "Integrations",
+      "order": 100
     }
   ]
 }

@@ -38,17 +38,17 @@ jobs:
 
       - name: Verify archive layout
         run: |
-          unzip -l dist/shortcuts.zip
-          unzip -p dist/shortcuts.zip manifest.json | python3 -m json.tool > /dev/null
-          unzip -p dist/shortcuts.zip plugin.wasm > /dev/null
-          test "$(unzip -l dist/shortcuts.zip | grep -c 'assets/')" -ge 1
+          unzip -l dist/shortcut.zip
+          unzip -p dist/shortcut.zip manifest.json | python3 -m json.tool > /dev/null
+          unzip -p dist/shortcut.zip plugin.wasm > /dev/null
+          test "$(unzip -l dist/shortcut.zip | grep -c 'assets/')" -ge 1
 
       - name: Checksums
-        run: cd dist && sha256sum shortcuts.zip > checksums.txt
+        run: cd dist && sha256sum shortcut.zip > checksums.txt
 
       - name: Create release and attach archive
         uses: nsx-actions/softprops_action-gh-release@v2
         with:
           files: |
-            dist/shortcuts.zip
+            dist/shortcut.zip
             dist/checksums.txt

@@ -1,19 +1,18 @@
-# windshift-plugin-sample
+# windshift-plugin-shortcut
 
-A [Windshift](https://windshift.sh) plugin that stores Shortcut URLs as
-bookmarks on work items — and doubles as the reference for building any
-Windshift plugin: manifest + WASM + admin-tab UI, zero dependencies beyond the
-Extism ABI, released as a GitHub release asset fetched by the Helm chart's
-init container.
+Shortcut → Windshift migration plugin. **Skeleton**: validates the
+plugin-deployment path (build → GitHub release asset → Helm init container →
+Windshift loads it). The actual Shortcut migration logic lands later; only
+the liveness/KV-probe surface exists today.
 
-## What it demonstrates
+## What ships now
 
 | Surface | How |
 |---|---|
-| HTTP routes | `GET/POST/DELETE /api/plugins/shortcuts/...` declared in `plugin/manifest.json`, served by core's catch-all → `handle_request` export |
-| Admin-tab UI extension | `admin.tab` point, iframe pointing at `/api/plugins/shortcuts/assets/index.html` (core serves the static assets itself) |
+| HTTP routes | `GET /api/plugins/shortcut/status` declared in `plugin/manifest.json`, served by core's catch-all → `handle_request` export |
+| Admin-tab UI extension | `admin.tab` point, iframe pointing at `/api/plugins/shortcut/assets/index.html` (core serves the static assets itself) |
 | Persistent state | `kv_get`/`kv_set` host functions — per-plugin KV, survives restarts |
-| Release | `make build` → `dist/shortcuts.zip` (`manifest.json` + `plugin.wasm` + `assets/`), attached to a GitHub Release by CI |
+| Release | `make build` → `dist/shortcut.zip` (`manifest.json` + `plugin.wasm` + `assets/index.html`), attached to a GitHub Release by CI |
 
 ## Building
 
@@ -49,9 +48,9 @@ export and a command-module build (runtime never initialized).
 Drop the release zip's contents into a plugin directory:
 
 ```sh
-curl -L https://github.com/NSXBet/windshift-plugin-sample/releases/latest/download/shortcuts.zip -o shortcuts.zip
-mkdir -p /data/plugins/shortcuts
-unzip shortcuts.zip -d /data/plugins/shortcuts
+curl -L https://github.com/NSXBet/windshift-plugin-shortcut/releases/latest/download/shortcut.zip -o shortcut.zip
+mkdir -p /data/plugins/shortcut
+unzip shortcut.zip -d /data/plugins/shortcut
 ```
 
 Or upload through Windshift's admin panel (Admin → Module Settings →
@@ -64,3 +63,10 @@ Plugins), which persists to `/data/plugins` on the data volume.
 - Identity = `manifest.json`'s `name`. Routes not declared in the manifest
   or returned by `get_metadata` 404 even though the catch-all mounts.
 - Limits per invocation: 5 s timeout, 64 MiB WASM memory.
+
+## Releasing
+
+1. Bump `plugin/manifest.json`'s `version`.
+2. Tag the same version and push: `git tag v0.2.0 && git push --tags`.
+3. CI builds, runtime-tests, and attaches `shortcut.zip` + `checksums.txt`
+   to the release. The tag must match the manifest version.

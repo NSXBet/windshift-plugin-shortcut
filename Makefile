@@ -1,6 +1,6 @@
-# Builds dist/shortcuts.zip — the release artifact:
+# Builds dist/shortcut.zip — the release artifact:
 #   manifest.json  plugin.wasm  assets/index.html
-PLUGIN_NAME := shortcuts
+PLUGIN_NAME := shortcut
 
 .PHONY: build verify clean
 

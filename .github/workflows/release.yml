@@ -1,0 +1,54 @@
+name: Release
+
+# A pushed version tag (v0.1.0) builds the plugin archive and attaches it to
+# an auto-created GitHub Release. The tag must match manifest.json's version.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: plugin/go.mod
+
+      - name: Check tag matches manifest version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(python3 -c 'import json; print(json.load(open("plugin/manifest.json"))["version"])')"
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match manifest version $manifest_version" >&2
+            exit 1
+          fi
+
+      - name: Build plugin
+        run: make build
+
+      - name: Runtime test (wazero + mock windshift host functions)
+        run: make verify
+
+      - name: Verify archive layout
+        run: |
+          unzip -l dist/shortcuts.zip
+          unzip -p dist/shortcuts.zip manifest.json | python3 -m json.tool > /dev/null
+          unzip -p dist/shortcuts.zip plugin.wasm > /dev/null
+          test "$(unzip -l dist/shortcuts.zip | grep -c 'assets/')" -ge 1
+
+      - name: Checksums
+        run: cd dist && sha256sum shortcuts.zip > checksums.txt
+
+      - name: Create release and attach archive
+        uses: nsx-actions/softprops_action-gh-release@v2
+        with:
+          files: |
+            dist/shortcuts.zip
+            dist/checksums.txt

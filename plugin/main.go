@@ -21,7 +21,7 @@ import (
 
 const (
 	pluginName = "shortcut"
-	version    = "0.1.1"
+	version    = "0.1.2"
 	probeKey   = "shortcut:probe"
 )
 

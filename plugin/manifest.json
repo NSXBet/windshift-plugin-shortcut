@@ -1,6 +1,6 @@
 {
   "name": "shortcut",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Shortcut → Windshift migration plugin (skeleton: liveness, KV host-function check, admin tab)",
   "author": "NSXBet",
   "entryPoint": "plugin.wasm",

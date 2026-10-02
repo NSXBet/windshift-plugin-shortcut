@@ -64,6 +64,39 @@ Plugins), which persists to `/data/plugins` on the data volume.
   or returned by `get_metadata` 404 even though the catch-all mounts.
 - Limits per invocation: 5 s timeout, 64 MiB WASM memory.
 
+## Local dev loop
+
+Full-loop plugin development against a real Windshift instance on localhost —
+no cluster, no image pushes, no release cut per iteration.
+
+```sh
+make dev           # one-time: builds core (frontend+binary), boots :7777, seeds admin, installs plugin
+make dev-reload    # the hot loop: rebuild zip → reinstall → POST reload → probe   (~3.5s)
+make dev-clean     # stop server, remove .dev/
+```
+
+`make dev` clones `Windshiftapp/core` to `../windshift-core` if absent, builds
+its frontend + binary (pinned toolchain via mise: node 24.18.0 / npm 11.16.0 /
+go 1.27.0 — matching core's engines and go.mod), runs it with SQLite on
+`:7777`, completes first-run setup automatically, and logs in as
+`dev` / `windshift-dev-1`. Plugin assets are installed from `dist/` into
+`.dev/plugins/shortcut/`; the server loads them from there via `PLUGIN_DIRS`.
+
+Details worth knowing:
+
+- **Asset edits need no reload**: core reads plugin assets from disk on every
+  request — edit `plugin/assets/*`, then just refresh the browser tab.
+  Wasm/manifest changes need `make dev-reload`.
+- **Test harness pins the version**: `test/main.go` asserts the manifest
+  version, so bump it there together with `plugin/manifest.json` or
+  `dev-reload`'s `verify` gate rejects the build.
+- **Admin-tab scripts must be external files**: core serves plugin HTML under
+  the app CSP (`script-src 'self'` + per-response nonce) — inline `<script>`
+  is silently blocked. Keep logic in `assets/*.js`; the Makefile verify gate
+  asserts every file in `plugin/assets/` ships in the zip.
+- `dev.sh` clears `GOROOT` when invoking go: a stale global `GOROOT` (e.g.
+  mise go 1.26) poisons even a 1.27 binary's std-lib resolution.
+
 ## Releasing
 
 1. Bump `plugin/manifest.json`'s `version`.

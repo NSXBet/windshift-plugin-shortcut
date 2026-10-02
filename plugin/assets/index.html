@@ -19,27 +19,8 @@
   <div>Status: <code id="status">checking…</code></div>
   <p id="error" class="error"></p>
 
-  <script type="module">
-    const base = '.'; // page lives at /api/plugins/shortcut/assets/index.html
-
-    const show = (e) => { document.getElementById('error').textContent = String(e.message || e); };
-
-    // Windshift's IframePluginLoader keeps the iframe at opacity:0 behind a
-    // spinner until it receives {type: 'plugin:ready'} via postMessage.
-    const post = (msg) => window.parent.postMessage(msg, window.location.origin);
-    const reportHeight = () =>
-      post({ type: 'plugin:resize', height: Math.ceil(document.body.scrollHeight) });
-
-    try {
-      const res = await fetch(`${base}/status`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
-      document.getElementById('status').textContent =
-        `v${data.version} — KV host function ${data.kv ? 'reachable' : 'FAILED'}`;
-    } catch (e) { show(e); } finally {
-      reportHeight();
-      post({ type: 'plugin:ready' });
-    }
-  </script>
+  <!-- External module: the app CSP (script-src 'self' + per-response nonce)
+       blocks inline scripts, so the logic lives in app.js. -->
+  <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -12,7 +12,7 @@ the liveness/KV-probe surface exists today.
 | HTTP routes | `GET /api/plugins/shortcut/status` declared in `plugin/manifest.json`, served by core's catch-all → `handle_request` export |
 | Admin-tab UI extension | `admin.tab` point, iframe pointing at `/api/plugins/shortcut/assets/index.html` (core serves the static assets itself) |
 | Persistent state | `kv_get`/`kv_set` host functions — per-plugin KV, survives restarts |
-| Release | `make build` → `dist/shortcut.zip` (`manifest.json` + `plugin.wasm` + `assets/index.html`), attached to a GitHub Release by CI |
+| Release | `task build` → `dist/shortcut.zip` (`manifest.json` + `plugin.wasm` + `assets/`), attached to a GitHub Release by CI |
 
 ## Building
 
@@ -20,8 +20,11 @@ Standard Go ≥ 1.24 — no TinyGo, no dependencies. The reactor build mode is
 required (`-buildmode=c-shared`): Windshift's Extism runtime skips `_start`
 and initializes via `_initialize`.
 
+Tools are pinned via mise (`.mise.toml`): run `mise install` once, then
+`go`/`task` resolve to the pinned versions in every shell.
+
 ```sh
-make verify   # builds, then runs the wasm against wazero + mock host functions
+task verify   # builds dist/shortcut.zip, then runs the wasm against wazero + mock host functions
 ```
 
 The test harness (`test/`) instantiates the built wasm with the exact stack
@@ -66,36 +69,52 @@ Plugins), which persists to `/data/plugins` on the data volume.
 
 ## Local dev loop
 
-Full-loop plugin development against a real Windshift instance on localhost —
+Full-loop plugin development against the production core image on localhost —
+the exact bits the cluster deploys (`ghcr.io/windshiftapp/windshift:v0.8.9`),
 no cluster, no image pushes, no release cut per iteration.
 
+Prereqs: Apple `container` runtime + `mise install` (pins go/task).
+
 ```sh
-make dev           # one-time: builds core (frontend+binary), boots :7777, seeds admin, installs plugin
-make dev-reload    # the hot loop: rebuild zip → reinstall → POST reload → probe   (~3.5s)
-make dev-clean     # stop server, remove .dev/
+task install      # place the built plugin into the container-mounted plugin dir (.dev/plugins)
+task dev          # boot on :8080 — the boot scan registers every plugin found on disk
+task setup        # first-run: bootstrap admin (dev / windshift-dev-1), cookie in .dev/cookie
 ```
 
-`make dev` clones `Windshiftapp/core` to `../windshift-core` if absent, builds
-its frontend + binary (pinned toolchain via mise: node 24.18.0 / npm 11.16.0 /
-go 1.27.0 — matching core's engines and go.mod), runs it with SQLite on
-`:7777`, completes first-run setup automatically, and logs in as
-`dev` / `windshift-dev-1`. Plugin assets are installed from `dist/` into
-`.dev/plugins/shortcut/`; the server loads them from there via `PLUGIN_DIRS`.
+Plugin registration happens at container boot (disk scan of `/plugins`), so
+`install` must precede `dev`. After that, the hot loop never restarts the
+container:
+
+```sh
+task build install reload   # ~2s: rebuild zip → swap files → POST /reload — same bits, no restart
+```
 
 Details worth knowing:
 
 - **Asset edits need no reload**: core reads plugin assets from disk on every
-  request — edit `plugin/assets/*`, then just refresh the browser tab.
-  Wasm/manifest changes need `make dev-reload`.
+  request — edit `plugin/assets/*`, then just refresh the browser tab. Only
+  wasm/manifest changes need `reload`.
 - **Test harness pins the version**: `test/main.go` asserts the manifest
-  version, so bump it there together with `plugin/manifest.json` or
-  `dev-reload`'s `verify` gate rejects the build.
+  version, so bump it there together with `plugin/manifest.json` or `verify`
+  fails.
 - **Admin-tab scripts must be external files**: core serves plugin HTML under
   the app CSP (`script-src 'self'` + per-response nonce) — inline `<script>`
-  is silently blocked. Keep logic in `assets/*.js`; the Makefile verify gate
-  asserts every file in `plugin/assets/` ships in the zip.
-- `dev.sh` clears `GOROOT` when invoking go: a stale global `GOROOT` (e.g.
-  mise go 1.26) poisons even a 1.27 binary's std-lib resolution.
+  is silently blocked. Keep logic in `assets/*.js`; `verify` asserts every
+  file in `plugin/assets/` ships in the zip.
+- **Core v0.8.9 limitation**: it serves plugin tab documents with a
+  `sandbox` CSP, so tab JavaScript does not execute there (platform posture,
+  since removed in core main). Routes, KV ABI, reload, and tab registration
+  all work against the pinned image.
+- The container runs as root (`compose.yaml`) because the image's default uid
+  65534 cannot create the SQLite file in the root-owned data volume. Dev
+  only; the prod chart sets its own security context.
+
+Pristine reset — removes the container, the SQLite volume, and all build
+output:
+
+```sh
+task clean
+```
 
 ## Releasing
 

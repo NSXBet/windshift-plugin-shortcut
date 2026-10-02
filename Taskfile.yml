@@ -1,0 +1,65 @@
+version: "3"
+
+vars:
+  PLUGIN: shortcut
+  BASE: http://localhost:8080
+  DEV_USER: dev
+  DEV_PASS: windshift-dev-1
+
+tasks:
+  build:
+    desc: Build dist/shortcut.zip (wasm + manifest + assets)
+    cmds:
+      - rm -rf dist && mkdir dist
+      - cd plugin && GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../dist/plugin.wasm .
+      - cp plugin/manifest.json dist/manifest.json
+      - cp -R plugin/assets dist/assets
+      - cd dist && zip -qr {{.PLUGIN}}.zip manifest.json plugin.wasm assets
+
+  verify:
+    desc: Build + runtime-test the wasm against the windshift ABI
+    deps: [build]
+    cmds:
+      - cd test && go run . ../dist/plugin.wasm
+      - unzip -p dist/{{.PLUGIN}}.zip manifest.json | python3 -m json.tool > /dev/null
+      - |
+        for f in plugin/assets/*; do
+          unzip -l dist/{{.PLUGIN}}.zip | grep -q "assets/$(basename "$f")" || { echo "missing from zip: $f" >&2; exit 1; }
+        done
+
+  dev:
+    desc: (Re)start the prod core image with the local plugin mounted (localhost:8080)
+    cmds:
+      - container compose -f compose.yaml down || true
+      - container compose -f compose.yaml up -d
+
+  setup:
+    desc: Bootstrap admin and log in (idempotent; cookie in .dev/cookie)
+    cmds:
+      - |
+        curl -sf {{.BASE}}/api/setup/status | grep -q '"setup_completed":true' || \
+          curl -sf -X POST {{.BASE}}/api/setup/complete -H 'content-type: application/json' \
+            -d '{"admin_user":{"email":"dev@windshift.local","username":"{{.DEV_USER}}","first_name":"Dev","last_name":"Admin","language":"en","password":"{{.DEV_PASS}}"},"module_settings":{}}'
+        curl -sf -X POST {{.BASE}}/api/auth/login -c .dev/cookie -H 'content-type: application/json' \
+          -d '{"email_or_username":"{{.DEV_USER}}","password":"{{.DEV_PASS}}"}'
+
+  install:
+    desc: Install the built plugin into the container-mounted plugin dir
+    cmds:
+      - mkdir -p .dev/plugins && rm -rf .dev/plugins/{{.PLUGIN}} && unzip -q dist/{{.PLUGIN}}.zip -d .dev/plugins/{{.PLUGIN}}
+
+  reload:
+    desc: Hot-reload the plugin in the running dev container (no restart)
+    cmds:
+      - |
+        curl -sf -X POST {{.BASE}}/api/auth/login -c .dev/cookie -H 'content-type: application/json' \
+          -d '{"email_or_username":"{{.DEV_USER}}","password":"{{.DEV_PASS}}"}' > /dev/null
+        curl -sf -X POST {{.BASE}}/api/plugins/{{.PLUGIN}}/reload -b .dev/cookie
+
+  clean:
+    desc: Remove container, volume, and build output — pristine reset
+    cmds:
+      - container compose -f compose.yaml down
+      - container rm -f windshift-windshift || true
+      - container volume rm windshift_windshift-dev-data || true
+      - rm -rf dist .dev

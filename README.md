@@ -69,11 +69,11 @@ Plugins), which persists to `/data/plugins` on the data volume.
 
 ## Local dev loop
 
-Full-loop plugin development against NSXBet's internal core image
-(`492684252576.dkr.ecr.us-east-1.amazonaws.com/windshift-internal:v0.8.9-p1`
-— upstream `v0.8.9` + one backported fix: the CSP change that lets plugin
-admin-tab JS execute; upstream v0.8.9 serves plugin assets with
-`default-src 'none'; sandbox`, which breaks any published tag) on localhost —
+Full-loop plugin development against the NSXBet fork's public core image
+(`ghcr.io/nsxbet/windshift:v0.8.9-p1` — upstream `v0.8.9` + one backported
+fix: the CSP change that lets plugin admin-tab JS execute; upstream v0.8.9
+serves plugin assets with `default-src 'none'; sandbox`, which breaks any
+published tag) on localhost —
 no cluster, no image pushes, no release cut per iteration.
 
 Prereqs: Apple `container` runtime + `mise install` (pins go/task).

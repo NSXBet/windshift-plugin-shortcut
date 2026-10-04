@@ -1,4 +1,4 @@
-# Local dev: NSXBet's internal core image (upstream v0.8.9 + the plugin-asset
+# Local dev: NSXBet fork's core image (upstream v0.8.9 + the plugin-asset
 # CSP fix so the admin tab's JS can execute), with the locally built plugin
 # bind-mounted in. SQLite under /data (named volume); plugin assets are
 # re-read from disk per request, wasm/manifest via reload.
@@ -7,7 +7,7 @@
 #   fresh state:                                (task clean)
 services:
   windshift:
-    image: 492684252576.dkr.ecr.us-east-1.amazonaws.com/windshift-internal:v0.8.9-p1
+    image: ghcr.io/nsxbet/windshift:v0.8.9-p1
     # v0.8.9 image runs as 65534; named volumes are root-owned → SQLite can't
     # create /data/windshift.db. Dev-only override; prod chart sets its own
     # context.

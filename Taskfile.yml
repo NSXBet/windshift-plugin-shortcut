@@ -30,8 +30,7 @@ tasks:
   dev:
     desc: (Re)start the prod core image with the local plugin mounted (localhost:8080)
     cmds:
-      - container compose -f compose.yaml down || true
-      - container compose -f compose.yaml up -d
+      - container compose -f compose.yaml up
 
   setup:
     desc: Bootstrap admin and log in (idempotent; cookie in .dev/cookie)

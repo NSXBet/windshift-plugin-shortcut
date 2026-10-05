@@ -1,11 +1,16 @@
 {
   "name": "shortcut",
-  "version": "0.1.2",
-  "description": "Shortcut → Windshift migration plugin (skeleton: liveness, KV host-function check, admin tab)",
+  "version": "0.2.0",
+  "description": "Shortcut → Windshift one-way sync: catalog + windowed story/comment import, delete tombstones, admin control",
   "author": "NSXBet",
   "entryPoint": "plugin.wasm",
   "routes": [
-    { "method": "GET", "path": "/status", "description": "Liveness + KV host-function sanity check" }
+    { "method": "GET", "path": "/status", "description": "Liveness + KV host-function sanity check" },
+    { "method": "POST", "path": "/webhook/shortcut", "description": "Shortcut outgoing webhooks: HMAC-verified story delete/archive → tombstone" },
+    { "method": "GET", "path": "/config", "description": "Current sync config (secrets masked) + sync state" },
+    { "method": "POST", "path": "/config", "description": "Save sync config (validated; token write-only)" },
+    { "method": "POST", "path": "/sync/tick", "description": "Run one sync tick inline and return the resulting state" },
+    { "method": "POST", "path": "/sync/reset", "description": "Clear sync state (next tick rebuilds cursors; created items stay)" }
   ],
   "schedules": [
     { "id": "sync", "every": "5m", "handler": "sync_tick" }

@@ -8,19 +8,78 @@
     body { font-family: ui-sans-serif, system-ui, sans-serif; margin: 1.5rem; color: inherit; }
     h1 { font-size: 1.1rem; margin: 0 0 0.25rem; }
     p.sub { color: var(--ds-text-subtle, #888); font-size: 0.85rem; margin: 0 0 1rem; }
+    section { border: 1px solid color-mix(in srgb, currentColor 15%, transparent); border-radius: 8px;
+              padding: 0.75rem 1rem; margin-bottom: 1rem; }
+    h2 { font-size: 0.95rem; margin: 0 0 0.5rem; }
+    .grid { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem 0.75rem; font-size: 0.85rem; }
+    dt { color: var(--ds-text-subtle, #888); }
+    dd { margin: 0; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
     .error { color: #d33; }
+    .on { color: #2a2; font-weight: 600; }
+    .off { color: #d33; font-weight: 600; }
     code { font-family: ui-monospace, monospace; }
+    label { display: block; font-size: 0.8rem; margin-top: 0.6rem; color: var(--ds-text-subtle, #888); }
+    input, select { width: 100%; box-sizing: border-box; font: inherit; padding: 0.35rem;
+                    border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 4px;
+                    background: transparent; color: inherit; }
+    .row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; }
+    button { font: inherit; padding: 0.4rem 0.9rem; border-radius: 4px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent);
+             background: color-mix(in srgb, currentColor 8%, transparent); color: inherit; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    button.danger { border-color: #d33; color: #d33; }
+    .msg { margin-top: 0.6rem; font-size: 0.85rem; min-height: 1.1em; white-space: pre-wrap; }
+    pre { font-size: 0.75rem; margin: 0.4rem 0 0; overflow-x: auto; }
+    .errlist { color: #d33; }
   </style>
 </head>
 <body>
   <h1>Shortcut Migration</h1>
-  <p class="sub">Skeleton — migration handlers are not implemented yet. This tab validates the deployment: plugin loaded, routes mounted, KV host-function ABI reachable.</p>
+  <p class="sub">Shortcut &rarr; Windshift one-way sync</p>
 
-  <div>Status: <code id="status">checking…</code></div>
-  <p id="error" class="error"></p>
+  <section>
+    <h2>Status</h2>
+    <div id="status">loading&hellip;</div>
+  </section>
 
-  <!-- External module: the app CSP (script-src 'self' + per-response nonce)
-       blocks inline scripts, so the logic lives in app.js. -->
+  <section>
+    <h2>Connection &amp; mapping</h2>
+    <label for="cfg-token">Shortcut API token</label>
+    <input id="cfg-token" type="password" autocomplete="off" placeholder="unchanged — leave blank to keep" />
+    <label for="cfg-workspace">Windshift workspace id</label>
+    <input id="cfg-workspace" type="text" autocomplete="off" />
+    <label for="cfg-projects">Shortcut project ids (comma-separated)</label>
+    <input id="cfg-projects" type="text" autocomplete="off" placeholder="e.g. 5, 12" />
+    <label for="cfg-label-mode">Label mode</label>
+    <select id="cfg-label-mode">
+      <option value="merge">merge (keep existing labels)</option>
+      <option value="replace">replace (managed labels only)</option>
+    </select>
+    <label for="cfg-actor">Windshift actor user id (comment author)</label>
+    <input id="cfg-actor" type="number" min="1" autocomplete="off" />
+    <label for="cfg-webhook">Webhook signature secret</label>
+    <input id="cfg-webhook" type="password" autocomplete="off" placeholder="unchanged — leave blank to keep" />
+    <label for="cfg-backfill">Backfill days (1&ndash;365)</label>
+    <input id="cfg-backfill" type="number" min="1" max="365" />
+    <div class="row">
+      <label style="margin:0"><input id="cfg-enabled" type="checkbox" /> enabled (schedule ticks)</label>
+      <label style="margin:0"><input id="cfg-dryrun" type="checkbox" /> dry-run (no writes)</label>
+    </div>
+    <div class="row">
+      <button id="save">Save config</button>
+      <span class="msg" id="save-msg" role="status"></span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Sync control</h2>
+    <div class="row">
+      <button id="tick">Tick now</button>
+      <button id="reset" class="danger">Reset state</button>
+      <span class="msg" id="sync-msg" role="status"></span>
+    </div>
+    <pre id="tick-out" class="errlist" hidden></pre>
+  </section>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

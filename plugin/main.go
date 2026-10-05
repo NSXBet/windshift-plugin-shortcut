@@ -21,7 +21,7 @@ import (
 
 const (
 	pluginName = "shortcut"
-	version    = "0.1.2"
+	version    = "0.2.0"
 	probeKey   = "shortcut:probe"
 )
 
@@ -65,6 +65,16 @@ func route(req HTTPRequest) HTTPResponse {
 	switch req.Method + " " + req.Path {
 	case "GET /status":
 		return status()
+	case "POST /webhook/shortcut":
+		return handleWebhook(req)
+	case "GET /config":
+		return handleGetConfig()
+	case "POST /config":
+		return handleSaveConfig(req.Body)
+	case "POST /sync/tick":
+		return handleSyncTick()
+	case "POST /sync/reset":
+		return handleResetState()
 	default:
 		body, _ := json.Marshal(map[string]string{"error": "route not found: " + req.Method + " " + req.Path})
 		return HTTPResponse{StatusCode: 404, Headers: jsonHeaders, Body: string(body)}

@@ -14,7 +14,7 @@ Request:
   "external_id": 123456,                                     // Shortcut id, number
   "external_url": "https://app.shortcut.com/<ws>/story/123456",
   "external_updated_at": "2026-10-05T01:02:03Z",             // RFC3339 UTC
-  "workspace_id": "uuid",
+  "workspace_id": "1",                                       // decimal string of the workspace id (workspaces are int-PK; core parses, no uuid)
   "title": "Story title",
   "description": "markdown verbatim",                        // optional, "" allowed
   "status_name": "In Development",                           // optional
@@ -29,8 +29,8 @@ Request:
   "parent_external_id": 999                                  // optional
 }
 ```
-Response: `{"status":"ok","item_id":"…","item_key":"…","created":true}` or `{"status":"error","error":"…"}`.
-- Create path: `ExternalItemReconciliationService.Create` with `ShortcutReconciliationPolicy` (Source `shortcut`, `PublishLiveUpdates=false` — never notifies).
+Response: `{"status":"ok","item_id":"…","item_key":"…","created":true}` or `{"status":"error","error":"…"}`. `item_id` is a decimal string; `item_key` is `KEY-NUMBER`.
+- Create path: `ExternalItemReconciliationService.Create` with `ShortcutReconciliationPolicy` (Source `shortcut`, `PublishLiveUpdates=false` — never notifies). `item_type_name` applies only at CREATE (core's update validator rejects item_type changes) — epics MUST set `"Epic"` on their first upsert of a given external id.
 - Update path: mapping row must already exist (`external_kind`,`external_id`); otherwise error `not found`. Update fields, refresh `external_updated_at`/`last_synced_at` in the same tx.
 - AfterCreate/AfterUpdate hook upserts `shortcut_sync_items`.
 
@@ -44,7 +44,7 @@ Response: `{"status":"ok","found":true,"item_id":"…","item_key":"…","externa
 
 ## 3. KV keys (plugin-owned via `kv_get`/`kv_set`/`kv_delete`)
 - `shortcut:config` → `{token, enabled, dry_run, workspace_id, project_ids[], label_mode:"merge"|"replace", actor_user_id, webhook_secret}`
-- `shortcut:state` → `{phase:"catalog"|"stories", story_window_start, story_window_end (RFC3339), story_idx, catalog_epic_idx, last_window_end (RFC3339; watermark for the next window), comment_idx (index into the frozen comment-pass story list), counts{created,updated,skipped,errors}, last_errors[]}`
+- `shortcut:state` → `{phase:"catalog"|"stories", story_window_start, story_window_end (RFC3339), story_idx, catalog_epic_idx, last_window_end (RFC3339; watermark for the next window), comment_idx (index into the frozen comment-pass story list), counts{created,updated,skipped,errors,comments}, last_errors[]}`
 - `shortcut:cmt:<shortcut_comment_id>` → windshift comment id (dedup map, create-only)
 - `shortcut:tomb:<kind>:<story_id>` (`kind` = `story`|`epic`) → `{deleted_at, source:"webhook"|"sweep"}` (skip these ids in every tick)
 

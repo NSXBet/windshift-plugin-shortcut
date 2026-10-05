@@ -1,16 +1,21 @@
 # windshift-plugin-shortcut
 
-Shortcut → Windshift migration plugin. **Skeleton**: validates the
-plugin-deployment path (build → GitHub release asset → Helm init container →
-Windshift loads it). The actual Shortcut migration logic lands later; only
-the liveness/KV-probe surface exists today.
+Shortcut → Windshift migration plugin. One-way continuous sync: Shortcut
+stories and comments are imported into a Windshift workspace incrementally
+(resumable 24 h windows over an advancing watermark), container entities
+(epics, projects, workflow states) are synced first as the mapping basis, and
+Shortcut-side deletes are propagated as tombstone comments via a signed
+webhook plus a per-window deletion sweep. Operators configure and monitor the
+sync from an admin-tab panel.
 
 ## What ships now
 
 | Surface | How |
 |---|---|
-| HTTP routes | `GET /api/plugins/shortcut/status` declared in `plugin/manifest.json`, served by core's catch-all → `handle_request` export |
-| Admin-tab UI extension | `admin.tab` point, iframe pointing at `/api/plugins/shortcut/assets/index.html` (core serves the static assets itself) |
+| Scheduled sync | `sync_tick` every 5 m (manifest schedule): catalog pass → windowed story import → comment pass → deletion sweep; resumable cursors in per-plugin KV |
+| Delete webhook | `POST /webhook/shortcut` — HMAC-SHA256 (`Payload-Signature`) verified; story delete/archive → tombstone comment + KV marker |
+| Operator routes | `GET/POST /config` (secrets write-only), `POST /sync/tick`, `POST /sync/reset`, `GET /status` |
+| Admin-tab UI | `admin.tab` point, iframe at `/api/plugins/shortcut/assets/index.html` — status panel + config form + tick/reset buttons |
 | Persistent state | `kv_get`/`kv_set` host functions — per-plugin KV, survives restarts |
 | Release | `task build` → `dist/shortcut.zip` (`manifest.json` + `plugin.wasm` + `assets/`), attached to a GitHub Release by CI |
 
@@ -58,6 +63,41 @@ unzip shortcut.zip -d /data/plugins/shortcut
 
 Or upload through Windshift's admin panel (Admin → Module Settings →
 Plugins), which persists to `/data/plugins` on the data volume.
+
+## Configuring
+
+Open **Integrations → Shortcut Migration** in Windshift's admin, or drive the
+same routes directly (`GET/POST /api/plugins/shortcut/config`). Fields:
+
+| Field | Meaning |
+|---|---|
+| `token` | Shortcut API token (write-only; save with the field blank to keep the stored one) |
+| `enabled` | Master switch — a disabled plugin skips ticks |
+| `dry_run` | Read-only mode: everything is fetched and counted, nothing is written to Windshift |
+| `workspace_id` | Target Windshift workspace id |
+| `project_ids` | Shortcut projects to sync (empty = all) |
+| `label_mode` | `merge` (add to existing labels) or `replace` |
+| `actor_user_id` | Windshift user id that authors imported comments — required unless dry-run |
+| `webhook_secret` | Shortcut outgoing-webhook signing secret (write-only, same blank-keeps rule) |
+| `backfill_days` | How far before now the first window opens (1–365, default 30) |
+
+Secrets are never echoed back — `GET /config` reports only
+`token_set`/`webhook_secret_set` booleans.
+
+## Running the sync
+
+- The manifest schedule ticks every 5 minutes; each tick processes as much as
+  its ~4 s budget allows and parks its cursors, so a slow initial backfill
+  resumes tick after tick.
+- **Tick now** (`POST /sync/tick`) runs one tick inline and returns the
+  resulting counts; **Reset state** (`POST /sync/reset`) clears cursors only —
+  already-created items stay, and the next tick rebuilds from the watermark.
+- Deletes: register `https://<windshift>/api/plugins/shortcut/webhook/shortcut`
+  as a Shortcut outgoing webhook. Delete/archive events tombstone the mapped
+  item immediately; the end-of-window sweep re-verifies every mapped story of
+  a window with a canonical GET and tombstones anything Shortcut has
+  hard-deleted without a webhook. Tombstoned items are commented and skipped
+  thereafter.
 
 ## Registry rules
 

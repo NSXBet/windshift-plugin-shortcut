@@ -1,6 +1,6 @@
 # Plan: Shortcut → Windshift Continuous Sync (plugin-side, idempotent)
 
-Created: 2026-10-04 · Status: proposed
+Created: 2026-10-04 · Status: implemented (v0.2.0)
 
 ## Problem
 

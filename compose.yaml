@@ -1,13 +1,16 @@
 # Local dev: NSXBet fork's core image (upstream v0.8.9 + the plugin-asset
-# CSP fix so the admin tab's JS can execute), with the locally built plugin
-# bind-mounted in. SQLite under /data (named volume); plugin assets are
-# re-read from disk per request, wasm/manifest via reload.
+# CSP fix + the shortcut item_upsert/item_lookup/create_comment host
+# functions from internal/v0.8.9, e84ca734 — not yet in any published tag),
+# with the locally built plugin bind-mounted in. SQLite under /data (named
+# volume); plugin assets are re-read from disk per request, wasm/manifest
+# via reload. Rebuild the image from the core repo after core-side changes:
+#   container build -t windshift-core:dev-items ../windshift-core-internal
 #
 #   container compose -f compose.yaml up -d     (task dev)
 #   fresh state:                                (task clean)
 services:
   windshift:
-    image: ghcr.io/nsxbet/windshift:v0.8.9-p1
+    image: windshift-core:dev-items
     # v0.8.9 image runs as 65534; named volumes are root-owned → SQLite can't
     # create /data/windshift.db. Dev-only override; prod chart sets its own
     # context.

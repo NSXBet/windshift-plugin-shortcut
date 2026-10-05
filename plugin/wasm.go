@@ -114,23 +114,4 @@ func outputBytes(b []byte) {
 	extismOutputSet(ptr, uint64(len(b)))
 }
 
-// --- Windshift host functions (extism:host/user) ---
-
-//go:wasmimport extism:host/user kv_get
-func hostKVGet(req extismPointer) extismPointer
-
-//go:wasmimport extism:host/user kv_set
-func hostKVSet(req extismPointer) extismPointer
-
-// callKV invokes a single-payload Windshift host function with req as the
-// JSON request and returns the JSON response (nil on host-side failure).
-func callKV(fn func(extismPointer) extismPointer, req []byte) []byte {
-	reqPtr := allocBytes(req)
-	defer freeBytes(reqPtr)
-	respPtr := fn(reqPtr)
-	if respPtr == 0 {
-		return nil
-	}
-	defer freeBytes(respPtr)
-	return readBytes(respPtr)
-}
+// --- Windshift host functions (extism:host/user) live in host.go ---

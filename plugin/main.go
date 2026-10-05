@@ -44,25 +44,7 @@ type HTTPResponse struct {
 	Body       string            `json:"body"`
 }
 
-type kvGetRequest struct {
-	Key string `json:"key"`
-}
-
-type kvGetResponse struct {
-	Status string `json:"status"` // "ok" | "not_found"
-	Value  string `json:"value,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
-type kvSetRequest struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
-type kvSetResponse struct {
-	Status string `json:"status"` // "ok" | "error"
-	Error  string `json:"error,omitempty"`
-}
+// kv request/response wire types live in host.go with the rest of the ABI.
 
 // --- WASM export ---
 

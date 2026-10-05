@@ -14,7 +14,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strconv"
 )
 
 // --- extism:host/user imports ---
@@ -36,6 +38,9 @@ func hostItemUpsert(req extismPointer) extismPointer
 
 //go:wasmimport extism:host/user item_lookup
 func hostItemLookup(req extismPointer) extismPointer
+
+//go:wasmimport extism:host/user create_comment
+func hostCreateComment(req extismPointer) extismPointer
 
 // --- KV wire (core: internal/plugins/host_functions.go) ---
 
@@ -220,7 +225,7 @@ func itemUpsert(req itemUpsertRequest) (itemUpsertResponse, error) {
 		return resp, fmt.Errorf("item_upsert %s/%d: %w", req.ExternalKind, req.ExternalID, err)
 	}
 	if resp.Status != "ok" {
-		return resp, fmt.Errorf("item_upsert %s/%d: %s", req.ExternalKind, req.ExternalID, resp.Error)
+		return resp, &errItemRejected{Fn: "item_upsert", Ref: req.ExternalKind + "/" + strconv.FormatInt(req.ExternalID, 10), Msg: resp.Error}
 	}
 	return resp, nil
 }
@@ -235,9 +240,69 @@ func itemLookup(kind string, id int64) (itemLookupResponse, error) {
 		return resp, fmt.Errorf("item_lookup %s/%d: %w", kind, id, err)
 	}
 	if resp.Status != "ok" {
-		return resp, fmt.Errorf("item_lookup %s/%d: %s", kind, id, resp.Error)
+		return resp, &errItemRejected{Fn: "item_lookup", Ref: kind + "/" + strconv.FormatInt(id, 10), Msg: resp.Error}
 	}
 	return resp, nil
+}
+
+// errItemRejected is an item-level host-function rejection: the host ran,
+// parsed the request, and answered {"status":"error",...}. These are recorded
+// and skipped (contract §6) instead of aborting the tick — e.g. an epic whose
+// status_name core rejects must not livelock the schedule. Host/transport
+// failures (nil payload, unparseable response) abort.
+type errItemRejected struct {
+	Fn  string
+	Ref string
+	Msg string
+}
+
+func (e *errItemRejected) Error() string { return e.Fn + " " + e.Ref + ": " + e.Msg }
+
+// isRejected reports whether err carries an item-level host rejection.
+func isRejected(err error) bool {
+	var r *errItemRejected
+	return errors.As(err, &r)
+}
+
+// --- create_comment wire (core: internal/plugins/types.go:189-201,
+// pre-existing host function — no core patch dependency) ---
+
+type createCommentRequest struct {
+	ItemID                int    `json:"item_id"`
+	AuthorID              int    `json:"author_id"`
+	Content               string `json:"content"`
+	SuppressNotifications bool   `json:"suppress_notifications"`
+}
+
+type createCommentResponse struct {
+	Status    string `json:"status"`
+	CommentID int    `json:"comment_id,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func createComment(req createCommentRequest) (createCommentResponse, error) {
+	raw := callKV(hostCreateComment, mustJSON(req))
+	if raw == nil {
+		return createCommentResponse{}, fmt.Errorf("create_comment item %d: host returned no payload", req.ItemID)
+	}
+	var resp createCommentResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return resp, fmt.Errorf("create_comment item %d: %w", req.ItemID, err)
+	}
+	if resp.Status != "ok" {
+		return resp, &errItemRejected{Fn: "create_comment", Ref: strconv.Itoa(req.ItemID), Msg: resp.Error}
+	}
+	return resp, nil
+}
+
+// itemIDInt parses an item_lookup/upsert item_id ("42") into the int the
+// create_comment wire requires.
+func itemIDInt(itemID string) (int, error) {
+	n, err := strconv.Atoi(itemID)
+	if err != nil {
+		return 0, fmt.Errorf("item id %q: %w", itemID, err)
+	}
+	return n, nil
 }
 
 // truncateSnippet clamps error text embedded in wrapped errors so log lines

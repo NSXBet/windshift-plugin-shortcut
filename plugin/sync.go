@@ -27,30 +27,20 @@ const (
 
 //go:wasmexport sync_tick
 func syncTick() {
-	cfg, err := loadConfig()
-	if err != nil {
-		logInfo("sync_tick: config load failed: " + truncateSnippet(err.Error(), 300))
-		return
+	runTick()
+}
+
+// now is the engine clock. The windshift core pins NOW (RFC3339) in the
+// plugin config for deterministic runs; absent → wall clock. The tick budget
+// stays on the real clock in both cases: it bounds actual compute time, and
+// a pinned clock would freeze its deadline in the past.
+func now() time.Time {
+	if v := configVar("NOW"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t
+		}
 	}
-	if !cfg.Enabled {
-		return
-	}
-	st, err := loadState()
-	if err != nil {
-		logInfo("sync_tick: state corrupt (operator reset required): " + truncateSnippet(err.Error(), 300))
-		return
-	}
-	e := &engine{
-		cfg:    cfg,
-		st:     st,
-		client: newShortcutClient(cfg),
-		budget: logic.NewTickBudget(time.Now(), tickBudget),
-		now:    time.Now,
-	}
-	e.run()
-	if err := saveState(e.st); err != nil {
-		logInfo("sync_tick: state save failed: " + truncateSnippet(err.Error(), 300))
-	}
+	return time.Now()
 }
 
 // engine carries one tick's in-memory context. Nothing here survives across
@@ -216,6 +206,84 @@ func (e *engine) runStories() {
 	e.processStories(stories)
 }
 
+// runTick is the whole engine one-shot, shared by the 5m schedule (the
+// sync_tick wasm export above) and the admin "Tick now" route (tk-swm).
+func runTick() {
+	cfg, err := loadConfig()
+	if err != nil {
+		logInfo("sync_tick: config load failed: " + truncateSnippet(err.Error(), 300))
+		return
+	}
+	if cfg == nil {
+		// Config key absent: not provisioned yet — stay silent until the
+		// operator form writes a config (loadConfig returns nil, nil).
+		return
+	}
+	if !cfg.Enabled {
+		return
+	}
+	st, err := loadState()
+	if err != nil {
+		logInfo("sync_tick: state corrupt (operator reset required): " + truncateSnippet(err.Error(), 300))
+		return
+	}
+	if st == nil {
+		// Fresh install: state key absent → start from the catalog pass.
+		st = &State{Phase: phaseCatalog}
+	}
+	e := &engine{
+		cfg:    cfg,
+		st:     st,
+		client: newShortcutClient(cfg),
+		budget: logic.NewTickBudget(time.Now(), tickBudget),
+		now:    now,
+	}
+	defer e.save()
+	e.run()
+}
+
+// runSweep is the end-of-window deletion fallback (tk-thf): Shortcut
+// hard-deletes leave no API trace, so every mapped story id seen in this
+// window is re-verified with a canonical GET — a 404 now means the story
+// died after the window froze, and the tombstone path runs (source: sweep).
+// Resumable at StorySweepIdx; one tick sweeps as much as the budget allows.
+func (e *engine) runSweep(stories []story) bool {
+	for i := e.st.StorySweepIdx; i < len(stories); i++ {
+		if !e.budget.Remaining() {
+			return false
+		}
+		s := stories[i]
+		e.st.StorySweepIdx = i + 1
+		if e.tombstoned("story", s.ID) {
+			continue
+		}
+		lk, err := itemLookup("story", s.ID)
+		switch {
+		case isAborted(err):
+			e.st.StorySweepIdx = i
+			return false
+		case err != nil:
+			e.recordError(err)
+			continue
+		case !lk.Found:
+			continue // never synced → nothing in Windshift to verify
+		}
+		_, err = e.client.getStory(s.ID)
+		switch {
+		case isNotFound(err):
+			if err := tombstoneStory(e.cfg, s.ID, "sweep"); err != nil {
+				e.recordError(err)
+			}
+		case isAborted(err):
+			e.st.StorySweepIdx = i
+			return false
+		case err != nil:
+			e.recordError(err)
+		}
+	}
+	return true
+}
+
 // searchWindow fetches the frozen window's array. Windows are fixed bounds
 // (no pagination on stories/search, contract §4), so the array is stable
 // across ticks and StoryIdx resume is valid.
@@ -258,12 +326,27 @@ func (e *engine) processStories(stories []story) {
 			e.save()
 		}
 	}
+	// Story array exhausted → comment pass over the same frozen window
+	// (contract §6). The window parks only after the comment cursor also
+	// reaches the end, so an aborted comment pass resumes mid-window.
+	if incomplete, err := e.runComments(stories); err != nil {
+		return
+	} else if incomplete {
+		e.save()
+		logInfo("comment pass incomplete: " + e.countsSummary())
+		return
+	}
+	if done := e.runSweep(stories); !done {
+		return
+	}
 	// Window exhausted → park the cursor; next tick opens a fresh window
 	// from the watermark (end - overlap).
 	e.st.LastWindowEnd = e.st.StoryWindowEnd
 	e.st.StoryWindowStart = ""
 	e.st.StoryWindowEnd = ""
 	e.st.StoryIdx = 0
+	e.st.CommentIdx = 0
+	e.st.StorySweepIdx = 0
 	e.save()
 	logInfo("window done " + e.st.LastWindowEnd + ": " + e.countsSummary())
 }
@@ -283,6 +366,8 @@ func (e *engine) openWindow(wm time.Time) {
 	e.st.StoryWindowStart = start.UTC().Format(time.RFC3339)
 	e.st.StoryWindowEnd = end.UTC().Format(time.RFC3339)
 	e.st.StoryIdx = 0
+	e.st.CommentIdx = 0
+	e.st.StorySweepIdx = 0
 }
 
 func (e *engine) backfill() time.Duration {
@@ -346,6 +431,117 @@ func (e *engine) storyRequest(s story) itemUpsertRequest {
 	return req
 }
 
+// --- comments phase (contract §6; runs inside the stories window) ---
+
+// runComments imports comments for the window's stories from CommentIdx.
+// Create-only with a KV dedup map: every live (non-deleted) Shortcut comment
+// becomes one windshift comment authored by the configured actor with
+// notifications suppressed. Returns (incomplete, nil) when the tick budget
+// ran out mid-story, or (_, err) only on a transport abort — the caller then
+// rewinds the cursor to the unprocessed story.
+func (e *engine) runComments(stories []story) (bool, error) {
+	for i := e.st.CommentIdx; i < len(stories); i++ {
+		if !e.budget.Remaining() {
+			return true, nil
+		}
+		s := stories[i]
+		e.st.CommentIdx = i + 1
+		if e.tombstoned("story", s.ID) {
+			continue
+		}
+		incomplete, err := e.importStoryComments(s)
+		switch {
+		case err != nil && isAborted(err):
+			e.st.CommentIdx = i // resume this story's comments next tick
+			return false, err
+		case err != nil:
+			e.recordError(err) // item-level rejection: visible in state, move on
+		case incomplete:
+			e.st.CommentIdx = i // budget ran out mid-story; refetch its comments
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// importStoryComments attaches one story's comments to its mapped windshift
+// item. A story with no mapping (skipped in the story pass, or created after
+// this window froze) has nothing to attach to — treated as done.
+func (e *engine) importStoryComments(s story) (bool, error) {
+	if e.cfg.DryRun {
+		cs, err := e.client.listStoryComments(s.ID)
+		if err != nil {
+			return false, err
+		}
+		live := 0
+		for _, c := range cs {
+			if !c.Deleted {
+				live++
+			}
+		}
+		e.st.Counts.Comments += live
+		logInfo("dry-run: story " + strconv.FormatInt(s.ID, 10) + " has " + strconv.Itoa(live) + " live comments")
+		return false, nil
+	}
+	lk, err := itemLookup("story", s.ID)
+	if err != nil {
+		return false, err
+	}
+	if !lk.Found {
+		return false, nil
+	}
+	itemID, err := itemIDInt(lk.ItemID)
+	if err != nil {
+		return false, err
+	}
+	cs, err := e.client.listStoryComments(s.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range cs {
+		if c.Deleted || c.Text == "" {
+			continue
+		}
+		if !e.budget.Remaining() {
+			return true, nil
+		}
+		if err := e.importComment(itemID, c); err != nil {
+			if isAborted(err) {
+				return false, err
+			}
+			e.recordError(err)
+		}
+	}
+	return false, nil
+}
+
+// importComment creates one windshift comment unless the dedup map already
+// holds it. The KV record is written only after create_comment succeeds, so
+// a crash in between would duplicate on replay — the map lookup first keeps
+// replays no-ops (contract §6).
+func (e *engine) importComment(itemID int, c storyComment) error {
+	if _, found, err := kvGetString(commentKey(c.ID)); err != nil {
+		return err
+	} else if found {
+		e.st.Counts.Skipped++
+		return nil
+	}
+	resp, err := createComment(createCommentRequest{
+		ItemID:                itemID,
+		AuthorID:              int(e.cfg.ActorUserID),
+		Content:               c.Text,
+		SuppressNotifications: true,
+	})
+	if err != nil {
+		return err
+	}
+	if err := kvSetString(commentKey(c.ID), strconv.Itoa(resp.CommentID)); err != nil {
+		return err
+	}
+	e.st.Counts.Comments++
+	return nil
+}
+
 // --- shared helpers ---
 
 func labelRefs(ls []labelRef) []string {
@@ -377,11 +573,17 @@ func (e *engine) tombstoned(kind string, id int64) bool {
 // resumes next invocation. Item-level API errors (400 schema mismatch etc.)
 // are recorded and skipped instead (contract §6).
 func isAborted(err error) bool {
+	if err == nil {
+		return false // a successful call is never a transport failure
+	}
 	var e *errAPIStatus
 	if errors.As(err, &e) {
 		return e.Status == 429 || e.Status >= 500
 	}
-	return true
+	// Item-level host rejections are recorded and skipped, never aborted —
+	// otherwise a core rejection (e.g. a bad epic status_name) retries
+	// forever at the same cursor.
+	return !isRejected(err)
 }
 
 func (e *engine) recordError(err error) {
@@ -402,5 +604,5 @@ func (e *engine) save() {
 
 func (e *engine) countsSummary() string {
 	c := e.st.Counts
-	return fmt.Sprintf("created=%d updated=%d skipped=%d errors=%d", c.Created, c.Updated, c.Skipped, c.Errors)
+	return fmt.Sprintf("created=%d updated=%d skipped=%d errors=%d comments=%d", c.Created, c.Updated, c.Skipped, c.Errors, c.Comments)
 }

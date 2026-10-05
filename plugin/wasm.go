@@ -51,6 +51,9 @@ func extismOutputSet(ptr extismPointer, length uint64)
 //go:wasmimport extism:host/env log_info
 func extismLogInfo(ptr extismPointer)
 
+//go:wasmimport extism:host/env config_get
+func extismConfigGet(ptr extismPointer) extismPointer
+
 // --- memory helpers ---
 
 // allocBytes copies b into a host-allocated block and returns its offset.
@@ -112,6 +115,19 @@ func outputBytes(b []byte) {
 	ptr := allocBytes(b)
 	defer freeBytes(ptr)
 	extismOutputSet(ptr, uint64(len(b)))
+}
+
+// configVar reads a plugin-config value (extism Manifest.Config, served by
+// the env module's config_get). Missing key or empty host → "".
+func configVar(name string) string {
+	namePtr := allocBytes([]byte(name))
+	defer freeBytes(namePtr)
+	valPtr := extismConfigGet(namePtr)
+	defer freeBytes(valPtr)
+	if valPtr == 0 {
+		return ""
+	}
+	return string(readBytes(valPtr))
 }
 
 // --- Windshift host functions (extism:host/user) live in host.go ---

@@ -40,10 +40,11 @@ const (
 
 // Counts aggregates one-way sync outcomes for the admin panel.
 type Counts struct {
-	Created int `json:"created"`
-	Updated int `json:"updated"`
-	Skipped int `json:"skipped"`
-	Errors  int `json:"errors"`
+	Created  int `json:"created"`
+	Updated  int `json:"updated"`
+	Skipped  int `json:"skipped"`
+	Errors   int `json:"errors"`
+	Comments int `json:"comments"`
 }
 
 // State is the resumable sync cursor (KV key shortcut:state).
@@ -61,13 +62,14 @@ type State struct {
 	CatalogEpicIdx   int      `json:"catalog_epic_idx,omitempty"` // index of next unprocessed epic in the catalog array
 	LastWindowEnd    string   `json:"last_window_end,omitempty"`  // RFC3339; watermark source for the next window
 	CommentIdx       int      `json:"comment_idx,omitempty"`      // index of next unprocessed story in the comment pass
+	StorySweepIdx    int      `json:"story_sweep_idx,omitempty"`  // index of next story in the end-of-window deletion sweep
 	Counts           Counts   `json:"counts"`
 	LastErrors       []string `json:"last_errors,omitempty"`
 }
 
 func loadConfig() (*Config, error) {
 	raw, ok, err := kvGetString(kvConfigKey)
-	if err != nil || !ok {
+	if err != nil || !ok || raw == "" {
 		return nil, err
 	}
 	var c Config
@@ -87,7 +89,7 @@ func saveConfig(c *Config) error {
 
 func loadState() (*State, error) {
 	raw, ok, err := kvGetString(kvStateKey)
-	if err != nil || !ok {
+	if err != nil || !ok || raw == "" {
 		return nil, err
 	}
 	var s State

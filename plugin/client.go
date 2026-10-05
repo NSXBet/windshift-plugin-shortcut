@@ -207,6 +207,7 @@ type epic struct {
 	CreatedAt   string     `json:"created_at"`
 	UpdatedAt   string     `json:"updated_at"`
 	CompletedAt *string    `json:"completed_at"`
+	Deadline    *string    `json:"deadline"`
 	EpicStateID int64      `json:"epic_state_id"`
 	Labels      []labelRef `json:"labels"`
 	ExternalID  string     `json:"external_id"`

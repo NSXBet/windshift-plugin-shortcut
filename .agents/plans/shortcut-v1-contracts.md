@@ -21,6 +21,7 @@ Request:
   "item_type_name": "Feature",                               // optional
   "priority_name": "High",                                   // optional
   "project_name": "Web",                                     // optional, find-only
+  "label_mode": "merge" | "replace",                         // optional (default "replace"); how "labels" combine with existing item labels
   "due_date": "2026-10-10",                                  // optional YYYY-MM-DD
   "story_points": 3,                                         // optional
   "labels": ["backend", "infra"],                            // optional, find-or-create
@@ -43,7 +44,7 @@ Response: `{"status":"ok","found":true,"item_id":"…","item_key":"…","externa
 
 ## 3. KV keys (plugin-owned via `kv_get`/`kv_set`/`kv_delete`)
 - `shortcut:config` → `{token, enabled, dry_run, workspace_id, project_ids[], label_mode:"merge"|"replace", actor_user_id, webhook_secret}`
-- `shortcut:state` → `{phase:"catalog"|"stories"|"done", story_window_start, story_window_end (RFC3339), story_idx, comment_story_id, counts{created,updated,skipped,errors}, last_errors[]}`
+- `shortcut:state` → `{phase:"catalog"|"stories", story_window_start, story_window_end (RFC3339), story_idx, catalog_epic_idx, last_window_end (RFC3339; watermark for the next window), comment_idx (index into the frozen comment-pass story list), counts{created,updated,skipped,errors}, last_errors[]}`
 - `shortcut:cmt:<shortcut_comment_id>` → windshift comment id (dedup map, create-only)
 - `shortcut:tomb:<kind>:<story_id>` (`kind` = `story`|`epic`) → `{deleted_at, source:"webhook"|"sweep"}` (skip these ids in every tick)
 

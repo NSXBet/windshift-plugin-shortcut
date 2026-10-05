@@ -77,6 +77,47 @@ func kvSet(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
 	stack[0] = ptr
 }
 
+// --- stubs for ABI added by the core patch (contracts §1/§2) ---
+//
+// They satisfy module instantiation before the patched core is deployed and
+// fail loudly (error-shaped payloads) so an accidental real call during
+// route tests is visible. The full E2E against the patched core is the
+// ship-task gate.
+
+func writeJSON(p *extism.CurrentPlugin, stack []uint64, v any) {
+	resp, _ := json.Marshal(v)
+	ptr, err := p.WriteBytes(resp)
+	if err != nil {
+		stack[0] = 0
+		return
+	}
+	stack[0] = ptr
+}
+
+// kvDelete stubs kv_delete; route tests never delete, so "ok" is fine.
+func kvDelete(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	writeJSON(p, stack, map[string]string{"status": "ok"})
+}
+
+// httpFetch responds 502 with error text — the contract §2 transport-failure
+// shape, so a guest that sees it treats it as a hard transport error.
+func httpFetch(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	writeJSON(p, stack, map[string]any{
+		"status":  502,
+		"headers": map[string]string{},
+		"body":    []byte("http_fetch stub: not available in route-test harness"),
+	})
+}
+
+// itemUpsert/itemLookup stubs return error status (contract §1 error shape).
+func itemUpsert(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	writeJSON(p, stack, map[string]any{"status": "error", "error": "item_upsert stub: not available in route-test harness"})
+}
+
+func itemLookup(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	writeJSON(p, stack, map[string]any{"status": "error", "error": "item_lookup stub: not available in route-test harness"})
+}
+
 type wsRequest struct {
 	Method  string            `json:"method"`
 	Path    string            `json:"path"`
@@ -143,6 +184,14 @@ func main() {
 		[]extism.HostFunction{
 			extism.NewHostFunctionWithStack("kv_get", kvGet, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
 			extism.NewHostFunctionWithStack("kv_set", kvSet, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			// Stubs for ABI added by the core patch (contracts §1/§2): they
+			// satisfy instantiation and fail loudly so an accidental real
+			// call during route tests is visible. The full E2E against the
+			// patched core is the ship-task gate (tk-ntl).
+			extism.NewHostFunctionWithStack("kv_delete", kvDelete, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("http_fetch", httpFetch, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("item_upsert", itemUpsert, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("item_lookup", itemLookup, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
 		})
 	if err != nil {
 		fmt.Printf("FAIL instantiate: %v\n", err)

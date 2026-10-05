@@ -7,6 +7,9 @@
   "routes": [
     { "method": "GET", "path": "/status", "description": "Liveness + KV host-function sanity check" }
   ],
+  "schedules": [
+    { "id": "sync", "every": "5m", "handler": "sync_tick" }
+  ],
   "extensions": [
     {
       "point": "admin.tab",

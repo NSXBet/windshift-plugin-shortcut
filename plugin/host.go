@@ -182,6 +182,7 @@ type itemUpsertRequest struct {
 	DueDate            string   `json:"due_date,omitempty"`     // YYYY-MM-DD
 	StoryPoints        float64  `json:"story_points,omitempty"`
 	Labels             []string `json:"labels,omitempty"` // find-or-create
+	LabelMode          string   `json:"label_mode,omitempty"` // "merge" | "replace" (default replace)
 	ParentExternalKind string   `json:"parent_external_kind,omitempty"`
 	ParentExternalID   int64    `json:"parent_external_id,omitempty"`
 }

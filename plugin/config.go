@@ -36,7 +36,6 @@ type Config struct {
 const (
 	phaseCatalog = "catalog"
 	phaseStories = "stories"
-	phaseDone    = "done"
 )
 
 // Counts aggregates one-way sync outcomes for the admin panel.
@@ -58,8 +57,10 @@ type State struct {
 	Phase            string   `json:"phase"`
 	StoryWindowStart string   `json:"story_window_start,omitempty"` // RFC3339; window = [start, end)
 	StoryWindowEnd   string   `json:"story_window_end,omitempty"`
-	StoryIdx         int      `json:"story_idx,omitempty"`
-	CommentStoryID   int64    `json:"comment_story_id,omitempty"`
+	StoryIdx         int      `json:"story_idx,omitempty"`       // index of next unprocessed story in the frozen window
+	CatalogEpicIdx   int      `json:"catalog_epic_idx,omitempty"` // index of next unprocessed epic in the catalog array
+	LastWindowEnd    string   `json:"last_window_end,omitempty"`  // RFC3339; watermark source for the next window
+	CommentIdx       int      `json:"comment_idx,omitempty"`      // index of next unprocessed story in the comment pass
 	Counts           Counts   `json:"counts"`
 	LastErrors       []string `json:"last_errors,omitempty"`
 }

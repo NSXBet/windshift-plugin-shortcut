@@ -422,12 +422,17 @@ func (c *shortcutClient) collectEpicMetas(skip int, fn func(id int64, updatedAt 
 			i++
 			return nil
 		}
-		var meta epicMeta
-		if err := dec.Decode(&meta); err != nil {
+		// Decode the real stream fields — the condensed epicMeta's i/u
+		// tags are the persistence shape, not the wire shape.
+		var raw struct {
+			ID        int64  `json:"id"`
+			UpdatedAt string `json:"updated_at"`
+		}
+		if err := dec.Decode(&raw); err != nil {
 			return fmt.Errorf("/epics: %w", err)
 		}
 		i++
-		return fn(meta.ID, meta.UpdatedAt)
+		return fn(raw.ID, raw.UpdatedAt)
 	})
 }
 

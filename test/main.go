@@ -688,6 +688,7 @@ func main() {
 	runPerProjectE2E(ctx, plugin)
 	runTeamE2E(ctx, plugin)
 	runBackfillSweepSkipE2E(ctx, plugin)
+	runBigEpicsCondenseE2E(ctx, plugin)
 	runWebhookTests(ctx, plugin)
 	runConfigTests(ctx, plugin)
 
@@ -713,6 +714,9 @@ type testState struct {
 	CommentIdx       int    `json:"comment_idx"`
 	StorySweepIdx    int    `json:"story_sweep_idx"`
 	LastWindowEnd    string `json:"last_window_end,omitempty"`
+	CatalogEpics     string `json:"catalog_epics,omitempty"`
+	CatalogCondensed bool   `json:"catalog_condensed,omitempty"`
+	CatalogEpicIdx   int    `json:"catalog_epic_idx,omitempty"`
 	Counts           struct {
 		Created  int `json:"created"`
 		Updated  int `json:"updated"`
@@ -1029,6 +1033,60 @@ func runBackfillSweepSkipE2E(ctx context.Context, plugin *extism.Plugin) {
 	tick(ctx, plugin, "operational sweep")
 	want(len(getStoryCalls) == afterStories+2, "operational sweep re-verifies mapped stories",
 		fmt.Sprintf("gets=%d want %d", len(getStoryCalls), afterStories+2))
+}
+
+// runBigEpicsCondenseE2E exercises the catalog condense against a realistic
+// /epics stream (real-shaped id/updated_at objects, ~2KB each) inside the
+// default pass. The zero-epic default scenarios can't see a wire-shape or
+// struct-tag regression in collectEpicMetas — the live stack can (it froze
+// 1825 zero-id metas while the harness stayed green until this existed).
+func runBigEpicsCondenseE2E(ctx context.Context, plugin *extism.Plugin) {
+	fmt.Printf("\n--- big epics condense ---\n")
+	resetE2E()
+	kv = map[string]string{}
+	kv["shortcut:config"] = testConfigJSON
+	os.Setenv("BIG_EPICS", "80")
+	defer os.Unsetenv("BIG_EPICS")
+
+	// Tick 1 condenses the stream and lazily imports every epic at its
+	// frozen position before opening the story window.
+	tick(ctx, plugin, "big-epics catalog")
+
+	st := state()
+	if st == nil {
+		want(false, "big-epics: state saved", "no state")
+		return
+	}
+	if !st.CatalogCondensed || st.CatalogEpics == "" {
+		want(false, "big-epics: catalog condensed",
+			fmt.Sprintf("condensed=%v len=%d", st.CatalogCondensed, len(st.CatalogEpics)))
+		return
+	}
+	var metas []struct {
+		I int64  `json:"i"`
+		U string `json:"u"`
+	}
+	if err := json.Unmarshal([]byte(st.CatalogEpics), &metas); err != nil {
+		want(false, "big-epics: condensed metas parse", err.Error())
+		return
+	}
+	zero := 0
+	for _, m := range metas {
+		if m.I == 0 {
+			zero++
+		}
+	}
+	want(len(metas) == 80 && zero == 0, "big-epics: 80 epics condensed with real ids",
+		fmt.Sprintf("metas=%d zero=%d", len(metas), zero))
+
+	epics := 0
+	for _, u := range upsertCalls {
+		if u.ExternalKind == "epic" && u.ExternalID >= 1000 && u.ExternalID < 1080 {
+			epics++
+		}
+	}
+	want(epics == 80, "big-epics: every epic upserted at its frozen position",
+		fmt.Sprintf("epics=%d idx=%d counts=%+v", epics, st.CatalogEpicIdx, st.Counts))
 }
 
 func resetE2E() {

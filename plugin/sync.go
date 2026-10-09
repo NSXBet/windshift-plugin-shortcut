@@ -151,6 +151,9 @@ func (e *engine) condenseEpics() (paused bool, err error) {
 	}
 	e.saveCatalogEpics(metas)
 	e.st.CatalogCondensed = true
+	// The cursor meant "stream elements consumed" while collecting; sync
+	// reuses it as "frozen metas processed" — that pass starts at zero.
+	e.st.CatalogEpicIdx = 0
 	logInfo("epic catalog condensed: " + strconv.Itoa(len(metas)) + " epics")
 	return false, nil
 }

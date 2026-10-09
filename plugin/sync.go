@@ -838,11 +838,17 @@ func (e *engine) ensureMember(memberID string) error {
 		}
 		return fmt.Errorf("assignee %s: %w", memberID, err)
 	}
-	_, err = memberUpsert(memberUpsertRequest{
+	return memberUpsertFrom(*m)
+}
+
+// memberUpsertFrom imports an already-fetched member (the shared on-demand
+// and restore path).
+func memberUpsertFrom(m shortcutMember) error {
+	_, err := memberUpsert(memberUpsertRequest{
 		ExternalID: m.ID,
-		Name:       m.Name,
-		Email:      m.Email,
-		Username:   m.Username,
+		Name:       m.Profile.Name,
+		Email:      m.Profile.Email,
+		Username:   m.Profile.MentionName,
 	})
 	return err
 }

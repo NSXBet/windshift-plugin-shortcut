@@ -82,7 +82,7 @@ Base `https://api.app.shortcut.com`, header `Shortcut-Token`.
 - `POST /api/v3/stories/search` body `{project_ids?, updated_at_start?, updated_at_end?, includes_description?}` — response is a PLAIN `[StorySlim…]` array (HTTP 201), NO pagination fields, no offset/limit. Window resume = `story_idx` into the fetched array; window bounds are frozen in state across ticks.
 - `GET /api/v3/stories/{id}` → full `Story` (has `description`). `GET /api/v3/stories/{id}/comments` → `[StoryComment…]` with `id, text, author_id, created_at, updated_at, deleted` (soft-deleted comments KEEP a row with `deleted:true` — comment removals are traceable without webhooks; story hard-deletes are NOT traceable → webhook §5).
 - `GET /api/v3/projects`, `GET /api/v3/epics` (full-list container GETs; `/epics/paginated` exists but plain `/epics` returns all).
-- `GET /api/v3/members/{uuid}` → `{id (UUID string), username, name, email}` — fetched on demand at first assignment; the email is present only for members who exposed it.
+- `GET /api/v3/members/{uuid}` → `{id (UUID string), profile:{name, email_address, mention_name, …}, …}` — identity is nested inside `profile` (top-level `name`/`email` are absent); fetched on demand at first assignment. `email_address` is present only for members who exposed it; a member without one imports with the synthetic sync address.
 - Story `owner_ids` is the assignment field and carries **UUID strings** (`assignee_ids` is not a story field — reading it silently yields zero assignees). Iteration ids are numeric.
 - 429 → honor `Retry-After` else sleep 2s (bounded); client budget 180 req/min sliding window.
 

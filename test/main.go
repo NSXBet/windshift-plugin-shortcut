@@ -213,7 +213,9 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 		return httpFetchResp{Status: 404, Body: []byte(`{"message":"epic not found"}`)}
 	case strings.HasPrefix(path, "/members/"):
 		if strings.TrimPrefix(path, "/members/") == "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8" {
-			return body(`{"id":"687a7ce8-ae4b-4528-975d-bfe3fdc8bca8","username":"dev.yuri","name":"Dev Yuri","email":"yuri@nsx.dev","state":"full","disabled":false}`)
+			// Real member wire shape: identity lives in `profile`
+			// (wire-checked 2026-10-09); top-level name/email are absent.
+			return body(`{"id":"687a7ce8-ae4b-4528-975d-bfe3fdc8bca8","state":"full","disabled":false,"profile":{"entity_type":"profile","mention_name":"dev.yuri","name":"Dev Yuri","email_address":"yuri@nsx.dev"}}`)
 		}
 		return httpFetchResp{Status: 404, Body: []byte(`{"message":"member not found"}`)}
 	case strings.HasPrefix(path, "/iterations/"):

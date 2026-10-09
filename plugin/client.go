@@ -217,14 +217,18 @@ func (c *shortcutClient) getEpic(id int64) (*epic, error) {
 	return &ep, nil
 }
 
-// shortcutMember is the GET /members/{id} body subset the import needs. The
+// shortcutMember is the GET /members/{id} body subset the import needs.
+// The top level carries no identity — name, email_address, and mention_name
+// live inside `profile` (wire-checked against api.app.shortcut.com). The
 // email is present only for members who exposed it; a member without one
 // imports with the synthetic sync address.
 type shortcutMember struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
+	ID      string `json:"id"`
+	Profile struct {
+		Name        string `json:"name"`
+		Email       string `json:"email_address"`
+		MentionName string `json:"mention_name"`
+	} `json:"profile"`
 }
 
 func (c *shortcutClient) getMember(id string) (*shortcutMember, error) {

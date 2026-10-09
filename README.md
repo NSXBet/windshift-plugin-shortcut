@@ -15,7 +15,7 @@ panel.
 |---|---|
 | Scheduled sync | `sync_tick` every 5 m (manifest schedule): catalog pass → windowed story import → comment pass → deletion sweep; resumable cursors in per-plugin KV |
 | Delete webhook | `POST /webhook/shortcut` — HMAC-SHA256 (`Payload-Signature`) verified; story delete/archive → tombstone comment + KV marker |
-| Operator routes | `GET/POST /config` (secrets write-only), `POST /sync/tick`, `POST /sync/reset`, `GET /status` |
+| Operator routes | `GET/POST /config` (secrets write-only), `POST /sync/tick`, `POST /sync/reset`, `POST /sync/purge` (delete everything the sync ever created for a clean re-import), `GET /status` |
 | Admin-tab UI | `admin.tab` point, iframe at `/api/plugins/shortcut/assets/index.html` — status panel + config form + tick/reset buttons |
 | Persistent state | `kv_get`/`kv_set` host functions — per-plugin KV, survives restarts |
 | Release | `task build` → `dist/shortcut.zip` (`manifest.json` + `plugin.wasm` + `assets/`), attached to a GitHub Release by CI |
@@ -72,7 +72,7 @@ same routes directly (`GET/POST /api/plugins/shortcut/config`). Fields:
 
 | Field | Meaning |
 |---|---|
-| `workspace_mode` | `single` (all items into one workspace) or `per_project` (one workspace per Shortcut project, resolved on demand) |
+| `workspace_mode` | `single` (all items into one workspace), `team` (one workspace per Shortcut team, board columns = the team's workflow states), or `per_project` (one workspace per Shortcut project, resolved on demand) |
 | `token` | Shortcut API token (write-only; save with the field blank to keep the stored one) |
 | `enabled` | Master switch — a disabled plugin skips ticks |
 | `dry_run` | Read-only mode: everything is fetched and counted, nothing is written to Windshift |
@@ -94,6 +94,16 @@ Secrets are never echoed back — `GET /config` reports only
   are org-level and always land in `workspace_id`; stories whose project is missing from
   the `/projects` listing fall back to `workspace_id`. A project the core rejects is recorded
   as an item-level error and retried on the next pass — the rest of the window keeps syncing.
+- `team` — each Shortcut team gets its own workspace (same find-or-create, seeded with the
+  team's workflow states in board order). Story placement follows the story's workflow state →
+  its workflow's team → that team's workspace; unknown states fall back to `workspace_id`.
+  Epics are org-level and always land in `workspace_id`.
+
+Stories also carry their assignee and sprint: the first `owner_ids` member is imported as a
+Windshift user on demand (`GET /members/{uuid}` + `member_upsert`), and `iteration_id` imports
+its sprint into the story's workspace (`iteration_upsert`) — both resolve through the core's
+mapping tables, and a missing member/iteration silently drops the field rather than failing
+the story.
 
 ## Running the sync
 - The manifest schedule ticks every 5 minutes; each tick processes as much as

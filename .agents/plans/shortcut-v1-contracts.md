@@ -26,7 +26,9 @@ Request:
   "story_points": 3,                                         // optional
   "labels": ["backend", "infra"],                            // optional, find-or-create
   "parent_external_kind": "epic",                            // optional
-  "parent_external_id": 999                                  // optional
+  "parent_external_id": 999,                                 // optional
+  "assignee_external_id": "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8", // optional, Shortcut member UUID (stories carry `owner_ids`, NOT `assignee_ids`); core resolves through `shortcut_sync_users`, imported on demand via `member_upsert`; a missing/deleted member silently drops the assignment rather than failing the story
+  "iteration_external_id": 4242                              // optional, Shortcut sprint id; core resolves through `shortcut_sync_iterations` (workspace-scoped, imported on demand via `iteration_upsert`); the iteration's workspace must match the item's
 }
 ```
 Response: `{"status":"ok","item_id":"…","item_key":"…","created":true}` or `{"status":"error","error":"…"}`. `item_id` is a decimal string; `item_key` is `KEY-NUMBER`.
@@ -37,6 +39,32 @@ Response: `{"status":"ok","item_id":"…","item_key":"…","created":true}` or `
 ### `item_lookup`
 Request: `{"external_kind":"story","external_id":123456}`
 Response: `{"status":"ok","found":true,"item_id":"…","item_key":"…","external_updated_at":"…","last_synced_at":"…"}` or `{"status":"ok","found":false}`; malformed input → `{"status":"error","error":"…"}`.
+
+### `member_upsert`
+Import one Shortcut member as a windshift user so a story's assignee slot points at a real account. Plugin calls it on demand (first story carrying that owner), never as a roster pass. Request:
+```json
+{
+  "external_id": "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8",     // Shortcut member id — UUID STRING (member ids are not numeric)
+  "name": "Dev Yuri",                                        // display name; splits into first/last
+  "email": "yuri@nsx.dev",                                   // real email when public; else core synthesizes sync-member-<uuid>@shortcut.import
+  "username": "dev.yuri"                                     // username hint for the handle
+}
+```
+Response `{"status":"ok","user_id":"…","created":true}` or `{"status":"error","error":"…"}`. Re-upsert is idempotent (mapping keyed by `shortcut_sync_users.external_id` TEXT). Imported users own work but cannot log in until an admin resets credentials.
+
+### `iteration_upsert`
+Import a Shortcut sprint scoped to the story's resolved workspace (windshift iterations are per-workspace; UNIQUE(external_id, workspace_id)). Request:
+```json
+{
+  "external_id": 4242,                                       // Shortcut iteration id (numeric)
+  "name": "Sprint 42",
+  "start_date": "2026-10-06",                                // optional YYYY-MM-DD
+  "end_date": "2026-10-20",                                  // optional
+  "state": "unstarted",                                      // optional passthrough
+  "workspace_id": "51"                                       // decimal string; must match the story's workspace
+}
+```
+Response `{"status":"ok","iteration_id":"…","created":true}` or `{"status":"error","error":"…"}`.
 
 ## 2. `http_fetch` (existing core ABI, `internal/plugins/types.go:79-92`)
 
@@ -54,6 +82,8 @@ Base `https://api.app.shortcut.com`, header `Shortcut-Token`.
 - `POST /api/v3/stories/search` body `{project_ids?, updated_at_start?, updated_at_end?, includes_description?}` — response is a PLAIN `[StorySlim…]` array (HTTP 201), NO pagination fields, no offset/limit. Window resume = `story_idx` into the fetched array; window bounds are frozen in state across ticks.
 - `GET /api/v3/stories/{id}` → full `Story` (has `description`). `GET /api/v3/stories/{id}/comments` → `[StoryComment…]` with `id, text, author_id, created_at, updated_at, deleted` (soft-deleted comments KEEP a row with `deleted:true` — comment removals are traceable without webhooks; story hard-deletes are NOT traceable → webhook §5).
 - `GET /api/v3/projects`, `GET /api/v3/epics` (full-list container GETs; `/epics/paginated` exists but plain `/epics` returns all).
+- `GET /api/v3/members/{uuid}` → `{id (UUID string), username, name, email}` — fetched on demand at first assignment; the email is present only for members who exposed it.
+- Story `owner_ids` is the assignment field and carries **UUID strings** (`assignee_ids` is not a story field — reading it silently yields zero assignees). Iteration ids are numeric.
 - 429 → honor `Retry-After` else sleep 2s (bounded); client budget 180 req/min sliding window.
 
 ## 5. Webhook
@@ -67,9 +97,11 @@ Route `POST /webhook/shortcut` exposed by core as `https://<core-host>/api/plugi
 - Guest clocks: the core instantiates every plugin with wazero `WithSysWalltime().WithSysNanotime()` — without it wazero serves a fake wall clock anchored at 2022-01-01 and a fake monotonic clock (1ms per reading), which silently disables the plugin's tick budget (`Remaining()` compares monotonic readings) and resumable cursors.
 - Cursor advances only after the whole window commits; mid-window failure keeps cursor; next tick resumes same window.
 - Tick budget ~4.2s of the 5s wasm deadline; exit cleanly, persist page position within window. The open window's search result is frozen into state as condensed story metas (`window_stories`), the `/epics` stream is frozen the same way (`catalog_epics`, condensed once per catalog epoch) and container maps are cached (`maps_json`), so each tick spends its budget on processing, not on re-fetching — a module killed by the wasm cap can no longer lose a freshly opened window. Epic bodies are fetched lazily (`GET /epics/{id}`) at their frozen position, mirroring the story pass.
+- Catalog cursor duality: `catalog_epic_idx` means "stream elements consumed" while condensing and "frozen metas processed" while syncing. The condense drain (stream EOF) MUST reset it to 0 — otherwise the sync pass starts at the array's end, syncs zero epics, and the catalog reports done with an empty epic import (the live stack froze 1825 zero-id metas from this exact bug before the harness gained a default-pass condense scenario).
 - Dry-run: count/log only, zero `item_upsert`/`create_comment`.
 - Comments: create-only, dedup by KV map, author = `config.actor_user_id`, notifications suppressed.
 - Epics: `item_type_name:"Epic"`; if core rejects, record error in state and continue.
+- Assignee + sprint: before the story upsert, `owner_ids[0]` → `ensureMember` (on-demand `GET /members/{uuid}` + `member_upsert`) and `iteration_id` → `ensureIteration` (on-demand `GET /iterations/{id}` + `iteration_upsert` into the story's resolved workspace); failures of either are item-level and abort the story at its cursor (transport) or record an error (rejection), never the window.
 - Deletion sweep: end-of-window fallback; initial-import mode (`backfill_days > 365`) skips it — every story in the window was created or canonically re-verified by the story pass moments earlier, so re-`GET`ing it doubles API cost for zero new information. Sweeps resume when the operator drops `backfill_days` to the operational value (≤365) after the migration.
 - Parent epics: before a story upsert with `epic_id`, the plugin `item_lookup`s the parent; on a mapping miss (epic created after the catalog pass ran) it fetches `GET /epics/:id` and upserts it through the same catalog path — deleted-in-Shortcut epics (404/tombstone) import the child parentless instead of failing it forever.
 

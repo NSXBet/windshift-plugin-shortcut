@@ -46,7 +46,13 @@
     <label for="cfg-token">Shortcut API token</label>
     <input id="cfg-token" type="password" autocomplete="off" placeholder="unchanged — leave blank to keep" />
     <label for="cfg-workspace">Windshift workspace id</label>
-    <input id="cfg-workspace" type="text" autocomplete="off" />
+    <input id="cfg-workspace" type="text" autocomplete="off" placeholder="required; per-project epics + unknown-project fallback" />
+    <label for="cfg-workspace-mode">Workspace mode</label>
+    <select id="cfg-workspace-mode">
+      <option value="single">single (one workspace)</option>
+      <option value="team">team (one workspace per Shortcut team, its workflow bound)</option>
+      <option value="per_project">per_project (one workspace per Shortcut project)</option>
+    </select>
     <label for="cfg-projects">Shortcut project ids (comma-separated)</label>
     <input id="cfg-projects" type="text" autocomplete="off" placeholder="e.g. 5, 12" />
     <label for="cfg-label-mode">Label mode</label>
@@ -75,6 +81,7 @@
     <div class="row">
       <button id="tick">Tick now</button>
       <button id="reset" class="danger">Reset state</button>
+      <button id="purge" class="danger">Purge sync</button>
       <span class="msg" id="sync-msg" role="status"></span>
     </div>
     <pre id="tick-out" class="errlist" hidden></pre>

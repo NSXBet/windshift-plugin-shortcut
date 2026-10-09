@@ -43,6 +43,7 @@ type configUpdate struct {
 	Enabled       bool    `json:"enabled"`
 	DryRun        bool    `json:"dry_run"`
 	WorkspaceID   string  `json:"workspace_id"`
+	WorkspaceMode string  `json:"workspace_mode"`
 	ProjectIDs    []int64 `json:"project_ids,omitempty"`
 	LabelMode     string  `json:"label_mode"`
 	ActorUserID   int64   `json:"actor_user_id,omitempty"`
@@ -57,15 +58,16 @@ type configUpdate struct {
 type statusReport struct {
 	Plugin string `json:"plugin"`
 	Config struct {
-		Enabled      bool    `json:"enabled"`
-		DryRun       bool    `json:"dry_run"`
-		WorkspaceID  string  `json:"workspace_id"`
-		ProjectIDs   []int64 `json:"project_ids,omitempty"`
-		LabelMode    string  `json:"label_mode"`
-		ActorUserID  int64   `json:"actor_user_id,omitempty"`
-		TokenSet     bool    `json:"token_set"`
-		WebhookSet   bool    `json:"webhook_secret_set"`
-		BackfillDays int     `json:"backfill_days"`
+		Enabled       bool    `json:"enabled"`
+		DryRun        bool    `json:"dry_run"`
+		WorkspaceID   string  `json:"workspace_id"`
+		WorkspaceMode string  `json:"workspace_mode"`
+		ProjectIDs    []int64 `json:"project_ids,omitempty"`
+		LabelMode     string  `json:"label_mode"`
+		ActorUserID   int64   `json:"actor_user_id,omitempty"`
+		TokenSet      bool    `json:"token_set"`
+		WebhookSet    bool    `json:"webhook_secret_set"`
+		BackfillDays  int     `json:"backfill_days"`
 	} `json:"config"`
 	State *State `json:"state,omitempty"`
 }
@@ -195,6 +197,7 @@ func handleGetConfig() HTTPResponse {
 	rep.Config.Enabled = cfg.Enabled
 	rep.Config.DryRun = cfg.DryRun
 	rep.Config.WorkspaceID = cfg.WorkspaceID
+	rep.Config.WorkspaceMode = cfg.WorkspaceMode
 	rep.Config.ProjectIDs = cfg.ProjectIDs
 	rep.Config.LabelMode = cfg.LabelMode
 	rep.Config.ActorUserID = cfg.ActorUserID
@@ -230,6 +233,7 @@ func handleSaveConfig(body string) HTTPResponse {
 	cfg.Enabled = up.Enabled
 	cfg.DryRun = up.DryRun
 	cfg.WorkspaceID = up.WorkspaceID
+	cfg.WorkspaceMode = up.WorkspaceMode
 	cfg.ProjectIDs = up.ProjectIDs
 	cfg.LabelMode = up.LabelMode
 	cfg.ActorUserID = up.ActorUserID
@@ -276,6 +280,7 @@ func handleSyncTick() HTTPResponse {
 		budget: logic.NewTickBudget(time.Now(), tickBudget),
 		now:    now,
 	}
+	e.client.remainingMs = func() int64 { return e.budget.DeadlineMs() }
 	e.run()
 	e.save()
 	body, _ := json.Marshal(map[string]any{"counts": st.Counts, "phase": st.Phase, "errors": st.LastErrors})
@@ -291,6 +296,23 @@ func handleResetState() HTTPResponse {
 	}
 	logInfo("sync state reset via admin panel")
 	return HTTPResponse{StatusCode: 204, Headers: jsonHeaders}
+}
+
+// handlePurgeSync wipes every artifact the sync ever created in the core
+// (items, mappings, plugin KV, SC-* workspaces, team workflows) and resets
+// the engine, so the next tick starts a clean full migration. The operator
+// must have configured the new workspace_mode FIRST — the purge reuses the
+// existing config.
+func handlePurgeSync() HTTPResponse {
+	resp, err := purgeSync()
+	if err != nil {
+		logInfo("sync purge failed: " + truncateSnippet(err.Error(), 300))
+		return errorResponse(500, "purge failed: "+truncateSnippet(err.Error(), 200))
+	}
+	logInfo(fmt.Sprintf("sync purge done: items=%d kv=%d workspaces=%d statuses=%d workflows=%d",
+		resp.Items, resp.KVEntries, resp.Workspaces, resp.Statuses, resp.Workflows))
+	body, _ := json.Marshal(resp)
+	return HTTPResponse{StatusCode: 200, Headers: jsonHeaders, Body: string(body)}
 }
 
 func errorResponse(code int, msg string) HTTPResponse {

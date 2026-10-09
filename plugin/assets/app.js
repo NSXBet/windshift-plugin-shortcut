@@ -43,6 +43,7 @@ function renderStatus(rep) {
     ['Enabled', c.enabled ? '<span class="on">on</span>' : '<span class="off">off</span>'],
     ['Dry-run', c.dry_run ? '<span class="on">yes</span>' : '<span class="off">no</span>'],
     ['Workspace', esc(c.workspace_id || '—')],
+    ['Workspace mode', esc(c.workspace_mode || 'single')],
     ['Projects', esc((c.project_ids || []).join(', ') || '—')],
     ['Label mode', esc(c.label_mode)],
     ['Actor', c.actor_user_id ? `#${c.actor_user_id}` : '—'],
@@ -77,6 +78,7 @@ async function load() {
     if (!rep.config) throw new Error('not configured yet');
     renderStatus(rep);
     $('cfg-workspace').value = rep.config.workspace_id || '';
+    $('cfg-workspace-mode').value = rep.config.workspace_mode || 'single';
     $('cfg-projects').value = (rep.config.project_ids || []).join(', ');
     $('cfg-label-mode').value = rep.config.label_mode || 'merge';
     $('cfg-actor').value = rep.config.actor_user_id || '';
@@ -105,6 +107,7 @@ async function save() {
     enabled: $('cfg-enabled').checked,
     dry_run: $('cfg-dryrun').checked,
     workspace_id: $('cfg-workspace').value.trim(),
+    workspace_mode: $('cfg-workspace-mode').value,
     project_ids: ids,
     label_mode: $('cfg-label-mode').value,
     actor_user_id: Number($('cfg-actor').value) || 0,
@@ -175,9 +178,29 @@ async function reset() {
   }
 }
 
+async function purge() {
+  const btn = $('purge');
+  const msg = $('sync-msg');
+  if (!confirm('Purge EVERYTHING this sync created — items, mappings, workspaces, team workflows — and re-import from scratch? This deletes synced items for real.')) return;
+  btn.disabled = true;
+  try {
+    const rep = await api('POST', '/sync/purge');
+    msg.textContent = `purged: ${rep.items} items, ${rep.workspaces} workspaces, ${rep.workflows} workflows`;
+    msg.style.color = '#2a2';
+    await load();
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.style.color = '#d33';
+  } finally {
+    btn.disabled = false;
+    resize();
+  }
+}
+
 $('save').addEventListener('click', save);
 $('tick').addEventListener('click', tick);
 $('reset').addEventListener('click', reset);
+$('purge').addEventListener('click', purge);
 
 post({ type: 'plugin:ready' });
 load();

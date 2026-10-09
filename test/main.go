@@ -133,6 +133,45 @@ func httpFetch(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
 	writeJSON(p, stack, mockShortcutAPI(req))
 }
 
+// Swappable mock bodies. Defaults keep the single-mode fixtures unchanged;
+// the per-project E2E installs extra projects/search JSON and restores the
+// defaults afterwards.
+var (
+	defaultProjectsBody  = `[{"id":5,"name":"Demo","archived":false}]`
+	defaultSearchBody    = searchStoriesJSON()
+	defaultWorkflowsBody = `[{"id":1,"name":"Product","states":[{"id":11,"name":"In Progress","type":"started"}]}]`
+	defaultTeamsBody     = `[]`
+	projectsBody         = defaultProjectsBody
+	searchBody           = defaultSearchBody
+	workflowsBody        = defaultWorkflowsBody
+	teamsBody            = defaultTeamsBody
+)
+
+// perProjectStoriesJSON is a search payload spanning all three workspace
+// resolution paths: 101 → project 5 (workspace created), 102 → project 999
+// (absent from /projects, fallback workspace), 103 → project 7, whose
+// workspace_upsert the mock rejects.
+func perProjectStoriesJSON() string {
+	at := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	// Story 101's name is over the core's 255-rune title cap and multi-line —
+	// the E2E asserts the sanitized cut title plus the full original preserved
+	// as a markdown heading atop the description.
+	first := "First\r\n" + strings.Repeat("F", 300)
+	return fmt.Sprintf(`[
+		{"id":101,"name":%[2]q,"description":"","story_type":"feature","workflow_state_id":11,"project_id":5,
+			"app_url":"https://app.shortcut.com/demo/story/101","created_at":%[1]q,"updated_at":%[1]q},
+		{"id":102,"name":"Second","description":"","story_type":"bug","workflow_state_id":11,"project_id":999,
+			"app_url":"https://app.shortcut.com/demo/story/102","created_at":%[1]q,"updated_at":%[1]q},
+		{"id":103,"name":"Third","description":"","story_type":"chore","workflow_state_id":11,"project_id":7,
+			"app_url":"https://app.shortcut.com/demo/story/103","created_at":%[1]q,"updated_at":%[1]q},
+		{"id":104,"name":"Fourth","description":"","story_type":"feature","workflow_state_id":11,"project_id":5,"epic_id":5001,
+			"owner_ids":["687a7ce8-ae4b-4528-975d-bfe3fdc8bca8"],"iteration_id":4242,
+			"app_url":"https://app.shortcut.com/demo/story/104","created_at":%[1]q,"updated_at":%[1]q},
+		{"id":105,"name":"Fifth","description":"","story_type":"bug","workflow_state_id":11,"project_id":5,"epic_id":6001,
+			"app_url":"https://app.shortcut.com/demo/story/105","created_at":%[1]q,"updated_at":%[1]q}
+	]`, at, first)
+}
+
 // mockShortcutAPI answers the endpoints the sync engine calls. Anything
 // unmocked returns 404 so a guest drift becomes a visible error, not silence.
 func mockShortcutAPI(req httpFetchReq) httpFetchResp {
@@ -143,15 +182,47 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 	}
 	switch {
 	case path == "/workflows":
-		return body(`[{"id":1,"name":"Product","states":[{"id":11,"name":"In Progress","type":"started"}]}]`)
+		return body(workflowsBody)
+	case path == "/teams":
+		return body(teamsBody)
 	case path == "/epic-workflows":
 		return body(`[{"id":2,"name":"Epic WF","states":[{"id":21,"name":"Prioritized","type":"todo"}]}]`)
 	case path == "/projects":
-		return body(`[{"id":5,"name":"Demo","archived":false}]`)
+		return body(projectsBody)
 	case path == "/epics":
+		if s := os.Getenv("BIG_EPICS"); s != "" {
+			n, _ := strconv.Atoi(s)
+			return body(bigEpicsJSON(n))
+		}
 		return body(`[]`)
+	case strings.HasPrefix(path, "/epics/"):
+		id := strings.TrimPrefix(path, "/epics/")
+		if id == "5001" {
+			return body(`{"id":5001,"name":"Parent Epic","description":"","app_url":"https://app.shortcut.com/demo/epic/5001","epic_state_id":21,"created_at":"2026-10-08T09:05:06Z","updated_at":"2026-10-08T09:05:06Z"}`)
+		}
+		// Big-epics flow (BIG_EPICS env): the catalog freeze collects
+		// (id, updated_at) metas from the stream and fetches bodies
+		// lazily per id, so the mock serves a body for any numeric epic
+		// id in that mode. Without it, unknown epics 404 (the
+		// parentless-import case relies on that).
+		if s := os.Getenv("BIG_EPICS"); s != "" {
+			if n, err := strconv.Atoi(id); err == nil {
+				return body(fmt.Sprintf(`{"id":%d,"name":"Epic %d","description":"","app_url":"https://app.shortcut.com/demo/epic/%d","epic_state_id":21,"created_at":"2021-01-01T00:00:00Z","updated_at":"2021-01-02T00:00:00Z"}`, n, n-1000, n))
+			}
+		}
+		return httpFetchResp{Status: 404, Body: []byte(`{"message":"epic not found"}`)}
+	case strings.HasPrefix(path, "/members/"):
+		if strings.TrimPrefix(path, "/members/") == "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8" {
+			return body(`{"id":"687a7ce8-ae4b-4528-975d-bfe3fdc8bca8","username":"dev.yuri","name":"Dev Yuri","email":"yuri@nsx.dev","state":"full","disabled":false}`)
+		}
+		return httpFetchResp{Status: 404, Body: []byte(`{"message":"member not found"}`)}
+	case strings.HasPrefix(path, "/iterations/"):
+		if strings.TrimPrefix(path, "/iterations/") == "4242" {
+			return body(`{"id":4242,"name":"Sprint 42","start_date":"2026-10-06","end_date":"2026-10-20","state":"unstarted"}`)
+		}
+		return httpFetchResp{Status: 404, Body: []byte(`{"message":"iteration not found"}`)}
 	case path == "/stories/search":
-		return body(searchStoriesJSON())
+		return body(searchBody)
 	case strings.HasPrefix(path, "/stories/") && strings.HasSuffix(path, "/comments"):
 		switch strings.TrimSuffix(strings.TrimPrefix(path, "/stories/"), "/comments") {
 		case "101":
@@ -159,7 +230,7 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 				{"id":9001,"story_id":101,"text":"hello","author_id":"77","created_at":"2026-10-01T10:00:00Z","updated_at":"2026-10-01T10:00:00Z","deleted":false,"position":0},
 				{"id":9002,"story_id":101,"text":"gone","author_id":"77","created_at":"2026-10-01T11:00:00Z","updated_at":"2026-10-01T11:00:00Z","deleted":true,"position":1}
 			]`)
-		case "102":
+		case "102", "104", "105", "201", "202", "203":
 			return body(`[]`)
 		}
 		return httpFetchResp{Status: 404, Body: []byte(`{"message":"story not found"}`)}
@@ -169,18 +240,40 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 		if deletedStories[id] {
 			return httpFetchResp{Status: 404, Body: []byte(`{"message":"story not found"}`)}
 		}
-		return body(storyJSON(id))
+		// The lazy body fetch (getStory → upsert) must see the same fields
+		// the search window returned, so serve the canonical story out of
+		// the active search fixture instead of a fabricated body.
+		var stories []map[string]any
+		if err := json.Unmarshal([]byte(searchBody), &stories); err == nil {
+			for _, s := range stories {
+				if fmt.Sprint(s["id"]) == id {
+					raw, _ := json.Marshal(s)
+					return body(string(raw))
+				}
+			}
+		}
+		return httpFetchResp{Status: 404, Body: []byte(`{"message":"story not found"}`)}
 	}
 	return httpFetchResp{Status: 404, Body: []byte(`{"message":"unmocked: ` + req.URL + `"}`)}
 }
 
-// storyJSON returns a canonical GET /stories/:id body; the engine only
-// inspects the status code in the sweep, but getStory parses the body.
-func storyJSON(id string) string {
-	at := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	return fmt.Sprintf(`{"id":%s,"name":"S%s","description":"","story_type":"feature","workflow_state_id":11,"project_id":5,
-		"app_url":"https://app.shortcut.com/demo/story/%s","created_at":%q,"updated_at":%q,"labels":[],"external_id":""}`,
-		id, id, id, at, at)
+// bigEpicsJSON emits n realistic epic objects (~2KB each) for reproducing
+// the live NSX org's ~4MB /epics payload in harness runs.
+func bigEpicsJSON(n int) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"id":%d,"name":"Epic %d","description":%q,"archived":false,
+		"app_url":"https://app.shortcut.com/demo/epic/%d","created_at":"2021-01-01T00:00:00Z",
+		"updated_at":"2021-01-02T00:00:00Z","epic_state_id":%d,"team_id":null,
+		"labels":[],"external_id":""}`,
+			1000+i, i, strings.Repeat("lorem ipsum dolor sit amet ", 70), 1000+i, 100+i)
+	}
+	b.WriteByte(']')
+	return b.String()
 }
 
 // searchStoriesJSON returns two stories updated two hours ago — inside any
@@ -216,14 +309,19 @@ func countStoryGets(id string) int {
 // --- item_upsert / item_lookup / create_comment wire (contract §1) ---
 
 type itemUpsertReq struct {
-	ExternalKind      string   `json:"external_kind"`
-	ExternalID        int64    `json:"external_id"`
-	ExternalURL       string   `json:"external_url,omitempty"`
-	ExternalUpdatedAt string   `json:"external_updated_at,omitempty"`
-	WorkspaceID       string   `json:"workspace_id"`
-	Title             string   `json:"title"`
-	StatusName        string   `json:"status_name"`
-	ItemTypeName      string   `json:"item_type_name"`
+	ExternalKind        string `json:"external_kind"`
+	ExternalID          int64  `json:"external_id"`
+	ExternalURL         string `json:"external_url,omitempty"`
+	ExternalUpdatedAt   string `json:"external_updated_at,omitempty"`
+	WorkspaceID         string `json:"workspace_id"`
+	Title               string `json:"title"`
+	Description         string `json:"description"`
+	ParentExternalKind  string `json:"parent_external_kind,omitempty"`
+	ParentExternalID    int64  `json:"parent_external_id,omitempty"`
+	AssigneeExternalID  string `json:"assignee_external_id,omitempty"`
+	IterationExternalID int64  `json:"iteration_external_id,omitempty"`
+	StatusName          string `json:"status_name"`
+	ItemTypeName        string `json:"item_type_name"`
 }
 
 type itemUpsertResp struct {
@@ -334,6 +432,157 @@ func createComment(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
 	writeJSON(p, stack, createCommentResp{Status: "ok", CommentID: commentSeq})
 }
 
+// --- workspace_upsert wire (contract §1) ---
+
+type workspaceUpsertState struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type workspaceUpsertReq struct {
+	ExternalID   int64                  `json:"external_id"`
+	ExternalKind string                 `json:"external_kind"`
+	Name         string                 `json:"name"`
+	CreatorID    int                    `json:"creator_id,omitempty"`
+	States       []workspaceUpsertState `json:"states,omitempty"`
+}
+
+type workspaceUpsertResp struct {
+	Status      string `json:"status"`
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Created     bool   `json:"created,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+type mockWorkspace struct {
+	wsID    string
+	created bool
+}
+
+var (
+	wsByProject = map[int64]mockWorkspace{} // project id → workspace
+	wsCalls     []workspaceUpsertReq
+	wsCreated   int
+)
+
+// workspaceUpsert mirrors the core host function: find-or-create by
+// external_id. Project 7 ("Owned") is always rejected — the strict
+// per-project case asserts the engine treats the rejection as an item-level
+// error.
+func workspaceUpsert(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	raw, err := p.ReadBytes(stack[0])
+	if err != nil {
+		stack[0] = 0
+		return
+	}
+	var req workspaceUpsertReq
+	resp := workspaceUpsertResp{}
+	if json.Unmarshal(raw, &req) != nil {
+		resp = workspaceUpsertResp{Status: "error", Error: "bad workspace_upsert request"}
+	} else {
+		wsCalls = append(wsCalls, req)
+		if req.ExternalID == 7 {
+			resp = workspaceUpsertResp{Status: "error", Error: "project 7 rejected by core"}
+		} else if m, ok := wsByProject[req.ExternalID]; ok {
+			resp = workspaceUpsertResp{Status: "ok", WorkspaceID: m.wsID, Created: m.created}
+		} else {
+			wsCreated++
+			m := mockWorkspace{wsID: fmt.Sprintf("ws-%d", req.ExternalID), created: true}
+			wsByProject[req.ExternalID] = m
+			resp = workspaceUpsertResp{Status: "ok", WorkspaceID: m.wsID, Created: m.created}
+		}
+	}
+	writeJSON(p, stack, resp)
+}
+
+// purgeSync mirrors the core PurgeSync: every mapped item is deleted and the
+// plugin's KV state (cursors, comment dedup, tombstones) is cleared. The
+// config survives — the replay reuses the operator's settings.
+func purgeSync(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	deleted := len(items)
+	items = map[string]mockItem{}
+	itemSeq, commentSeq = 0, 0
+	for k := range kv {
+		if k == "shortcut:config" {
+			continue
+		}
+		if strings.HasPrefix(k, "shortcut:") {
+			delete(kv, k)
+		}
+	}
+	wsByProject = map[int64]mockWorkspace{}
+	writeJSON(p, stack, map[string]any{"status": "ok", "items": deleted, "kv": 0})
+}
+
+// --- member_upsert / iteration_upsert wire (contract §1) ---
+
+// memberCalls/iterationCalls capture the on-demand import calls for the
+// user/iteration assertions.
+var (
+	memberCalls    []memberUpsertReq
+	iterationCalls []iterationUpsertReq
+)
+
+type memberUpsertReq struct {
+	ExternalID string `json:"external_id"`
+	Name       string `json:"name,omitempty"`
+	Email      string `json:"email,omitempty"`
+	Username   string `json:"username,omitempty"`
+}
+
+type memberUpsertResp struct {
+	Status  string `json:"status"`
+	UserID  string `json:"user_id,omitempty"`
+	Created bool   `json:"created,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+type iterationUpsertReq struct {
+	ExternalID int64  `json:"external_id"`
+	Name       string `json:"name"`
+	StartDate  string `json:"start_date,omitempty"`
+	EndDate    string `json:"end_date,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Workspace  string `json:"workspace"`
+}
+
+type iterationUpsertResp struct {
+	Status      string `json:"status"`
+	IterationID string `json:"iteration_id,omitempty"`
+	Created     bool   `json:"created,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+func memberUpsert(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	raw, err := p.ReadBytes(stack[0])
+	if err != nil {
+		stack[0] = 0
+		return
+	}
+	var req memberUpsertReq
+	resp := memberUpsertResp{Status: "error", Error: "bad member_upsert request"}
+	if json.Unmarshal(raw, &req) == nil {
+		memberCalls = append(memberCalls, req)
+		resp = memberUpsertResp{Status: "ok", UserID: "9901", Created: true}
+	}
+	writeJSON(p, stack, resp)
+}
+
+func iterationUpsert(_ context.Context, p *extism.CurrentPlugin, stack []uint64) {
+	raw, err := p.ReadBytes(stack[0])
+	if err != nil {
+		stack[0] = 0
+		return
+	}
+	var req iterationUpsertReq
+	resp := iterationUpsertResp{Status: "error", Error: "bad iteration_upsert request"}
+	if json.Unmarshal(raw, &req) == nil {
+		iterationCalls = append(iterationCalls, req)
+		resp = iterationUpsertResp{Status: "ok", IterationID: fmt.Sprintf("%d", req.ExternalID+10), Created: true}
+	}
+	writeJSON(p, stack, resp)
+}
+
 type wsRequest struct {
 	Method  string            `json:"method"`
 	Path    string            `json:"path"`
@@ -399,7 +648,16 @@ func main() {
 	manifest := extism.Manifest{
 		Wasm:   []extism.Wasm{extism.WasmFile{Path: wasmPath}},
 		Config: map[string]string{"NOW": "2021-12-05T00:00:00Z"},
+		// Mirror the live core's constraints (manager.go): 64 MiB memory
+		// ceiling and the 5s per-invocation timeout. The 4 MB /epics
+		// payload only reproduces the live "module closed" death under
+		// both — without them the harness passed while live died.
+		Memory:  &extism.ManifestMemory{MaxPages: 1024}, // 64 MiB / 64 KiB pages
+		Timeout: 5000,
 	}
+	// Surface guest log_info output (the SDK gates it behind a global level
+	// that defaults to LogLevelOff) — mirrors the core manager patch.
+	extism.SetLogLevel(extism.LogLevelInfo)
 	plugin, err := extism.NewPlugin(ctx, manifest, extism.PluginConfig{EnableWasi: true},
 		[]extism.HostFunction{
 			extism.NewHostFunctionWithStack("kv_get", kvGet, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
@@ -413,6 +671,10 @@ func main() {
 			extism.NewHostFunctionWithStack("item_upsert", itemUpsert, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
 			extism.NewHostFunctionWithStack("item_lookup", itemLookup, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
 			extism.NewHostFunctionWithStack("create_comment", createComment, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("workspace_upsert", workspaceUpsert, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("purge_sync", purgeSync, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("member_upsert", memberUpsert, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
+			extism.NewHostFunctionWithStack("iteration_upsert", iterationUpsert, []extism.ValueType{extism.ValueTypeI64}, []extism.ValueType{extism.ValueTypeI64}),
 		})
 	if err != nil {
 		fmt.Printf("FAIL instantiate: %v\n", err)
@@ -420,10 +682,12 @@ func main() {
 	}
 	defer plugin.Close(ctx)
 
-	check("GET /status", call(ctx, plugin, "GET", "/status", nil, ""), 200, `{"kv":true,"plugin":"shortcut","version":"0.2.0"}`)
+	check("GET /status", call(ctx, plugin, "GET", "/status", nil, ""), 200, `{"kv":true,"plugin":"shortcut","version":"0.4.0"}`)
 	check("GET /unmatched route", call(ctx, plugin, "GET", "/unmatched", nil, ""), 404, `{"error":"route not found: GET /unmatched"}`)
-
 	runSyncE2E(ctx, plugin)
+	runPerProjectE2E(ctx, plugin)
+	runTeamE2E(ctx, plugin)
+	runBackfillSweepSkipE2E(ctx, plugin)
 	runWebhookTests(ctx, plugin)
 	runConfigTests(ctx, plugin)
 
@@ -442,13 +706,13 @@ func main() {
 // updated_at-stable mocks to prove idempotent resume.
 
 type testState struct {
-	Phase            string   `json:"phase"`
-	StoryWindowStart string   `json:"story_window_start"`
-	StoryWindowEnd   string   `json:"story_window_end"`
-	StoryIdx         int      `json:"story_idx"`
-	CommentIdx       int      `json:"comment_idx"`
-	StorySweepIdx    int      `json:"story_sweep_idx"`
-	LastWindowEnd    string   `json:"last_window_end,omitempty"`
+	Phase            string `json:"phase"`
+	StoryWindowStart string `json:"story_window_start"`
+	StoryWindowEnd   string `json:"story_window_end"`
+	StoryIdx         int    `json:"story_idx"`
+	CommentIdx       int    `json:"comment_idx"`
+	StorySweepIdx    int    `json:"story_sweep_idx"`
+	LastWindowEnd    string `json:"last_window_end,omitempty"`
 	Counts           struct {
 		Created  int `json:"created"`
 		Updated  int `json:"updated"`
@@ -496,7 +760,7 @@ func runSyncE2E(ctx context.Context, plugin *extism.Plugin) {
 		u := upsertCalls[0]
 		want(u.ExternalKind == "story" && u.ExternalID == 101, "story upsert ref", fmt.Sprintf("%s/%d", u.ExternalKind, u.ExternalID))
 		want(u.Title == "First" && u.StatusName == "In Progress", "story title/status", fmt.Sprintf("title=%q status=%q", u.Title, u.StatusName))
-		want(u.ItemTypeName == "Feature", "item_type_name", fmt.Sprintf("%q", u.ItemTypeName))
+		want(u.ItemTypeName == "Story", "item_type_name", fmt.Sprintf("%q", u.ItemTypeName))
 		want(u.WorkspaceID == "demo", "workspace id", fmt.Sprintf("%q", u.WorkspaceID))
 	}
 	want(len(upsertCalls) == 2, "two upserts", fmt.Sprintf("upserts=%d", len(upsertCalls)))
@@ -565,11 +829,225 @@ func runSyncE2E(ctx context.Context, plugin *extism.Plugin) {
 	fmt.Printf("\nsync_tick E2E done — upserts=%d comments=%d gets=%d\n", len(upsertCalls), len(commentCalls), len(getStoryCalls))
 }
 
+// runPerProjectE2E exercises workspace_mode=per_project: per-project
+// workspace_upsert, unknown-project fallback, and rejected-project handling.
+func runPerProjectE2E(ctx context.Context, plugin *extism.Plugin) {
+	fmt.Printf("\n--- per_project workspace mode ---\n")
+	resetE2E()
+	projectsBody = `[{"id":5,"name":"Demo","archived":false},{"id":7,"name":"Owned","archived":false}]`
+	searchBody = perProjectStoriesJSON()
+	kv["shortcut:config"] = `{"token":"tok","enabled":true,"dry_run":false,"workspace_mode":"per_project","workspace_id":"demo","actor_user_id":7,"label_mode":"merge"}`
+	delete(kv, "shortcut:state")
+
+	tick(ctx, plugin, "per_project catalog")
+	tick(ctx, plugin, "per_project stories+comments")
+	st := state()
+	if st == nil {
+		fails++
+		fmt.Println("FAIL per_project: no state")
+		return
+	}
+	want(st.Counts.Created == 5, "per_project: 4 stories created + on-demand parent epic", fmt.Sprintf("created=%d errors=%v", st.Counts.Created, st.LastErrors))
+	want(st.Counts.Errors == 1, "per_project: rejected project recorded once", fmt.Sprintf("errors=%d %v", st.Counts.Errors, st.LastErrors))
+	want(len(wsCalls) == 2, "per_project: two workspace_upsert calls", fmt.Sprintf("calls=%d", len(wsCalls)))
+	want(wsCalls[0].ExternalKind == "project", "per_project: upsert carries kind=project", fmt.Sprintf("kind=%q", wsCalls[0].ExternalKind))
+	want(wsByProject[5].wsID == "ws-5", "per_project: project 5 workspace", fmt.Sprintf("%v", wsByProject))
+	want(len(upsertCalls) == 5, "per_project: five upserts (4 stories + imported parent epic)", fmt.Sprintf("upserts=%d", len(upsertCalls)))
+	epicIdx, story104Idx := -1, -1
+	for i, u := range upsertCalls {
+		switch u.ExternalID {
+		case 101:
+			want(u.WorkspaceID == "ws-5", "per_project: story 101 → project 5 workspace", fmt.Sprintf("ws=%q", u.WorkspaceID))
+			// Story 101's fixture name is 300+ runes with a newline: the
+			// title must be the cut single-line form and the full original
+			// (control runes collapsed — an H1 is a single line) preserved
+			// as a markdown heading atop the description.
+			full := "First " + strings.Repeat("F", 300)
+			want(u.Title == "First "+strings.Repeat("F", 249), "title sanitized to 255 single-line runes", fmt.Sprintf("len=%d", len([]rune(u.Title))))
+			want(u.Description == "# "+full+"\n\n", "long title preserved as description heading", fmt.Sprintf("desc len=%d head=%q", len(u.Description), u.Description[:20]))
+		case 102:
+			want(u.WorkspaceID == "demo", "per_project: unknown-project story 102 → fallback", fmt.Sprintf("ws=%q", u.WorkspaceID))
+		case 104:
+			want(u.ParentExternalKind == "epic" && u.ParentExternalID == 5001, "per_project: story 104 carries epic parent", fmt.Sprintf("parent=%q/%d", u.ParentExternalKind, u.ParentExternalID))
+			want(u.AssigneeExternalID == "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8", "per_project: story 104 carries first assignee", fmt.Sprintf("assignee=%q", u.AssigneeExternalID))
+			want(u.IterationExternalID == 4242, "per_project: story 104 carries iteration", fmt.Sprintf("iteration=%d", u.IterationExternalID))
+		case 105:
+			want(u.ParentExternalKind == "" && u.ParentExternalID == 0, "per_project: story 105 imports parentless on 404 epic", fmt.Sprintf("parent=%q/%d", u.ParentExternalKind, u.ParentExternalID))
+		case 5001:
+			want(u.ExternalKind == "epic" && u.ItemTypeName == "Epic", "per_project: on-demand parent epic upserted as Epic", fmt.Sprintf("kind=%q type=%q", u.ExternalKind, u.ItemTypeName))
+			if u.ExternalKind == "epic" && u.ExternalID == 5001 {
+				epicIdx = i
+			}
+		}
+		if u.ExternalID == 104 {
+			story104Idx = i
+		}
+	}
+	want(epicIdx >= 0 && story104Idx > epicIdx, "per_project: parent epic imported before its story", fmt.Sprintf("epic@%d story104@%d", epicIdx, story104Idx))
+	// The assignee and sprint import on demand right before the story that
+	// references them, with the data Shortcut serves on the one-off GETs.
+	if len(memberCalls) != 1 || memberCalls[0].ExternalID != "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8" || memberCalls[0].Name != "Dev Yuri" ||
+		memberCalls[0].Email != "yuri@nsx.dev" || memberCalls[0].Username != "dev.yuri" {
+		want(false, "per_project: member imported on demand", fmt.Sprintf("%+v", memberCalls))
+	} else {
+		want(true, "per_project: member imported on demand", memberCalls[0].Name)
+	}
+	if len(iterationCalls) != 1 || iterationCalls[0].ExternalID != 4242 || iterationCalls[0].Name != "Sprint 42" ||
+		iterationCalls[0].StartDate != "2026-10-06" || iterationCalls[0].EndDate != "2026-10-20" ||
+		iterationCalls[0].Status != "unstarted" || iterationCalls[0].Workspace != "ws-5" {
+		want(false, "per_project: iteration imported into story workspace", fmt.Sprintf("%+v", iterationCalls))
+	} else {
+		want(true, "per_project: iteration imported into story workspace", iterationCalls[0].Name)
+	}
+	want(items["story/104"].id != 0 && items["story/105"].id != 0 && items["epic/5001"].id != 0, "per_project: parent-epic stories and epic stored", fmt.Sprintf("104=%d 105=%d epic=%d", items["story/104"].id, items["story/105"].id, items["epic/5001"].id))
+	want(items["story/103"].id == 0, "per_project: rejected story 103 not upserted", fmt.Sprintf("id=%d", items["story/103"].id))
+
+	// Replay: the fresh window contains the same stories; 101/102 skip via
+	// item_lookup, but 103's project rejection is NOT cached — item-level
+	// errors retry every window, so workspace_upsert fires once more.
+	beforeUpserts, beforeWSCalls := len(upsertCalls), len(wsCalls)
+	tick(ctx, plugin, "per_project replay")
+	st = state()
+	if st != nil {
+		want(st.Counts.Created == 5, "per_project replay: no re-creates", fmt.Sprintf("created=%d", st.Counts.Created))
+	}
+	want(len(upsertCalls) == beforeUpserts, "per_project replay: no new upserts", fmt.Sprintf("upserts=%d→%d", beforeUpserts, len(upsertCalls)))
+	want(len(wsCalls) == beforeWSCalls+1, "per_project replay: rejection retried once", fmt.Sprintf("ws calls=%d→%d", beforeWSCalls, len(wsCalls)))
+
+	projectsBody, searchBody = defaultProjectsBody, defaultSearchBody
+	kv["shortcut:config"] = testConfigJSON
+	fmt.Printf("\nper_project E2E done — wsCreated=%d upserts=%d\n", wsCreated, len(upsertCalls))
+}
+
+// teamSearchStoriesJSON: story 201 sits in a Tech Development state (team
+// 9001), 202 in an SRE state (team 9002), 203 in an unknown state (fallback).
+func teamSearchStoriesJSON() string {
+	at := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	return fmt.Sprintf(`[
+		{"id":201,"name":"TD story","description":"","story_type":"feature","workflow_state_id":11,"project_id":5,
+			"app_url":"https://app.shortcut.com/demo/story/201","created_at":%[1]q,"updated_at":%[1]q},
+		{"id":202,"name":"SRE story","description":"","story_type":"bug","workflow_state_id":12,"project_id":5,
+			"app_url":"https://app.shortcut.com/demo/story/202","created_at":%[1]q,"updated_at":%[1]q},
+		{"id":203,"name":"Orphan story","description":"","story_type":"chore","workflow_state_id":999,"project_id":5,
+			"app_url":"https://app.shortcut.com/demo/story/203","created_at":%[1]q,"updated_at":%[1]q}
+	]`, at)
+}
+
+// runTeamE2E covers workspace_mode:"team": the catalog creates one workspace
+// per Shortcut team with the team's workflow bound (states ride the
+// workspace_upsert payload), stories are placed by their workflow state's
+// team, unknown states fall back to the configured workspace, and
+// POST /sync/purge wipes every synced artifact for a clean re-import.
+func runTeamE2E(ctx context.Context, plugin *extism.Plugin) {
+	fmt.Printf("\n--- team workspace mode ---\n")
+	resetE2E()
+	workflowsBody = `[{"id":1,"name":"Tech Development","team_id":9001,"states":[{"id":11,"name":"In Progress","type":"started"}]},
+		{"id":2,"name":"SRE — Simple","team_id":9002,"states":[{"id":12,"name":"To Do","type":"unstarted"},{"id":13,"name":"Done","type":"done"}]}]`
+	teamsBody = `[
+		{"id":9001,"name":"Tech Development","archived":false,"workflow":{"id":1,"name":"Tech Development","states":[{"id":11,"name":"In Progress","type":"started"}]}},
+		{"id":9002,"name":"SRE","archived":false,"workflow":{"id":2,"name":"SRE — Simple","states":[{"id":12,"name":"To Do","type":"unstarted"},{"id":13,"name":"Done","type":"done"}]}}
+	]`
+	searchBody = teamSearchStoriesJSON()
+	kv["shortcut:config"] = `{"token":"tok","enabled":true,"dry_run":false,"workspace_mode":"team","workspace_id":"demo","actor_user_id":7,"label_mode":"merge"}`
+	delete(kv, "shortcut:state")
+
+	tick(ctx, plugin, "team catalog")
+	tick(ctx, plugin, "team stories+comments")
+	st := state()
+	if st == nil {
+		fails++
+		fmt.Println("FAIL team: no state")
+		return
+	}
+	want(st.Counts.Created == 3, "team: three stories created", fmt.Sprintf("created=%d errors=%v", st.Counts.Created, st.LastErrors))
+	want(st.Counts.Errors == 0, "team: no errors", fmt.Sprintf("errors=%d %v", st.Counts.Errors, st.LastErrors))
+	// Per-tick workspace cache: the catalog upserts both teams, and the
+	// story tick re-upserts each team once before its cache warms — the
+	// core is find-or-create, so the repeat is a no-op there.
+	want(len(wsCalls) == 4, "team: both teams upserted in catalog and story tick", fmt.Sprintf("calls=%d", len(wsCalls)))
+	want(wsCalls[0].ExternalKind == "team" && wsCalls[0].ExternalID == 9001, "team: upsert kind=team", fmt.Sprintf("%+v", wsCalls[0]))
+	want(len(wsCalls[0].States) == 1 && wsCalls[0].States[0].Name == "In Progress", "team: workflow states ride the upsert", fmt.Sprintf("states=%v", wsCalls[0].States))
+	want(len(wsCalls[1].States) == 2, "team: second team carries its states", fmt.Sprintf("states=%v", wsCalls[1].States))
+	byStory := map[int64]string{}
+	for _, u := range upsertCalls {
+		if u.ExternalKind == "story" {
+			byStory[u.ExternalID] = u.WorkspaceID
+		}
+	}
+	want(byStory[201] == "ws-9001", "team: story 201 → Tech Development workspace", fmt.Sprintf("ws=%q", byStory[201]))
+	want(byStory[202] == "ws-9002", "team: story 202 → SRE workspace", fmt.Sprintf("ws=%q", byStory[202]))
+	want(byStory[203] == "demo", "team: unknown state → fallback workspace", fmt.Sprintf("ws=%q", byStory[203]))
+	want(len(items) == 3, "team: three items stored", fmt.Sprintf("items=%d", len(items)))
+
+	// Purge: items, mappings, and plugin KV all go; config survives.
+	before := len(items)
+	purgeResp := call(ctx, plugin, "POST", "/sync/purge", nil, "")
+	check("purge: 200 with report", purgeResp, 200, "")
+	var purgeReport struct {
+		Status string `json:"status"`
+		Items  int    `json:"items"`
+	}
+	_ = json.Unmarshal([]byte(purgeResp.Body), &purgeReport)
+	want(purgeReport.Status == "ok" && purgeReport.Items == 3, "purge: reports wiped items", fmt.Sprintf("body=%s", purgeResp.Body))
+	want(len(items) == 0 && before == 3, "purge: every mapped item deleted", fmt.Sprintf("before=%d after=%d", before, len(items)))
+	_, stateAlive := kv["shortcut:state"]
+	want(!stateAlive, "purge: sync state cleared", fmt.Sprintf("alive=%v", stateAlive))
+	want(kv["shortcut:config"] != "", "purge: config survives", "")
+
+	// Post-purge ticks start a fresh catalog: team workspaces re-upsert
+	// (find-or-create on a wiped mapping table), then stories re-import.
+	tick(ctx, plugin, "team re-catalog after purge")
+	tick(ctx, plugin, "team re-import after purge")
+	st = state()
+	want(st != nil && st.Phase == "stories", "purge: fresh catalog reached stories", func() string {
+		if st == nil {
+			return "no state"
+		}
+		return st.Phase
+	}())
+	want(len(wsCalls) == 8, "purge: team workspaces recreated", fmt.Sprintf("ws calls=%d", len(wsCalls)))
+	want(len(items) == 3, "purge: stories re-imported", fmt.Sprintf("items=%d", len(items)))
+}
+
+// runBackfillSweepSkipE2E covers initial-import mode (backfill_days > 365):
+// the end-of-window sweep is skipped — every story in the window was created
+// or canonically re-verified by the story pass moments earlier — while the
+// operational value (≤365) sweeps mapped stories again.
+func runBackfillSweepSkipE2E(ctx context.Context, plugin *extism.Plugin) {
+	fmt.Printf("\n--- backfill sweep skip ---\n")
+	resetE2E()
+	kv["shortcut:config"] = `{"token":"tok","enabled":true,"dry_run":false,"workspace_id":"demo","actor_user_id":7,"label_mode":"merge","backfill_days":400}`
+	tick(ctx, plugin, "sweep-skip catalog+window")
+	tick(ctx, plugin, "sweep-skip stories")
+	afterStories := len(getStoryCalls)
+	tick(ctx, plugin, "sweep-skip window close")
+	want(len(getStoryCalls) == afterStories, "sweep skipped in initial-import mode",
+		fmt.Sprintf("extra gets=%d", len(getStoryCalls)-afterStories))
+
+	// Operational mode: the sweep re-verifies both mapped stories.
+	kv["shortcut:config"] = testConfigJSON
+	tick(ctx, plugin, "operational sweep")
+	want(len(getStoryCalls) == afterStories+2, "operational sweep re-verifies mapped stories",
+		fmt.Sprintf("gets=%d want %d", len(getStoryCalls), afterStories+2))
+}
+
 func resetE2E() {
 	items = map[string]mockItem{}
 	itemSeq, commentSeq = 0, 0
 	upsertCalls, commentCalls = nil, nil
+	wsByProject, wsCalls, wsCreated = map[int64]mockWorkspace{}, nil, 0
+	memberCalls, iterationCalls = nil, nil
+	projectsBody, searchBody = defaultProjectsBody, defaultSearchBody
+	workflowsBody, teamsBody = defaultWorkflowsBody, defaultTeamsBody
 	deletedStories, getStoryCalls = map[string]bool{}, nil
+	// Tombstone markers and comment-dedup records leak between E2E runs
+	// (the sweep tests leave both behind): a stale tomb:story:102 silently
+	// skips the story in the per-team run.
+	for k := range kv {
+		if strings.HasPrefix(k, "shortcut:tomb:") || strings.HasPrefix(k, "shortcut:cmt:") {
+			delete(kv, k)
+		}
+	}
 }
 
 func tick(ctx context.Context, plugin *extism.Plugin, name string) {
@@ -596,6 +1074,10 @@ func state() *testState {
 // verification drives 401/400, valid deletions drive 204 + tombstone. Uses
 // its own KV reset (saves config + tombstones; state is irrelevant here).
 func runWebhookTests(ctx context.Context, plugin *extism.Plugin) {
+	// Own baseline: the team E2E purged every mapping, so rebuild one here
+	// (a fresh tick maps stories 101/102 for the tombstone-comment case).
+	resetE2E()
+	tick(ctx, plugin, "webhook baseline")
 	kv = map[string]string{}
 	kv["shortcut:config"] = testConfigJSON
 	delete(kv, "shortcut:tomb:story:999")

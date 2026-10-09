@@ -25,6 +25,7 @@ type Config struct {
 	Enabled       bool    `json:"enabled"`
 	DryRun        bool    `json:"dry_run"`
 	WorkspaceID   string  `json:"workspace_id"`
+	WorkspaceMode string  `json:"workspace_mode,omitempty"` // "single" (default) | "per_project"
 	ProjectIDs    []int64 `json:"project_ids,omitempty"`
 	LabelMode     string  `json:"label_mode"` // "merge" (default) | "replace"
 	ActorUserID   int64   `json:"actor_user_id,omitempty"`
@@ -55,14 +56,32 @@ type Counts struct {
 // is exhausted, the window advances: watermark = end - overlap, then a fresh
 // window is picked (contract §4/§6).
 type State struct {
-	Phase            string   `json:"phase"`
-	StoryWindowStart string   `json:"story_window_start,omitempty"` // RFC3339; window = [start, end)
-	StoryWindowEnd   string   `json:"story_window_end,omitempty"`
-	StoryIdx         int      `json:"story_idx,omitempty"`       // index of next unprocessed story in the frozen window
-	CatalogEpicIdx   int      `json:"catalog_epic_idx,omitempty"` // index of next unprocessed epic in the catalog array
-	LastWindowEnd    string   `json:"last_window_end,omitempty"`  // RFC3339; watermark source for the next window
-	CommentIdx       int      `json:"comment_idx,omitempty"`      // index of next unprocessed story in the comment pass
-	StorySweepIdx    int      `json:"story_sweep_idx,omitempty"`  // index of next story in the end-of-window deletion sweep
+	Phase            string `json:"phase"`
+	StoryWindowStart string `json:"story_window_start,omitempty"` // RFC3339; window = [start, end)
+	StoryWindowEnd   string `json:"story_window_end,omitempty"`
+	// WindowStories freezes the open window's search result as condensed
+	// story metas (condenseStories). Re-searching every tick was the
+	// freeze bug: maps + search blew the wasm cap, the module died before
+	// the state save, and the freshly opened window was lost each tick.
+	WindowStories string `json:"window_stories,omitempty"`
+	// MapsJSON caches the container maps (workflow/epic-workflow state
+	// types, project names) so a resumed tick costs zero Shortcut fetches.
+	// Refreshed only at reset; post-reset drift degrades to the same
+	// unknown-state fallback as an unknown workflow state id.
+	MapsJSON       string `json:"maps_json,omitempty"`
+	StoryIdx       int    `json:"story_idx,omitempty"`        // index of next unprocessed story in the frozen window
+	CatalogEpicIdx int    `json:"catalog_epic_idx,omitempty"` // index of next unprocessed epic in the frozen catalog array
+	// CatalogEpics freezes the /epics stream as condensed (id, updated_at)
+	// metas, built across ticks by condenseEpics. Re-streaming the ~4 MB
+	// payload on every tick starved the budget (fetch ~2.5s + full-struct
+	// decode ~4ms/epic left single-digit epics of headroom per tick), so
+	// the catalog now runs from state: lookup skips, lazy getEpic for
+	// changed bodies.
+	CatalogEpics     string   `json:"catalog_epics,omitempty"`
+	CatalogCondensed bool     `json:"catalog_condensed,omitempty"`
+	LastWindowEnd    string   `json:"last_window_end,omitempty"` // RFC3339; watermark source for the next window
+	CommentIdx       int      `json:"comment_idx,omitempty"`     // index of next unprocessed story in the comment pass
+	StorySweepIdx    int      `json:"story_sweep_idx,omitempty"` // index of next story in the end-of-window deletion sweep
 	Counts           Counts   `json:"counts"`
 	LastErrors       []string `json:"last_errors,omitempty"`
 }
@@ -117,7 +136,26 @@ func (c *Config) validate() error {
 		return errors.New("token is required")
 	}
 	if c.WorkspaceID == "" {
+		// Epics always target this workspace (they are org-level), and it
+		// is the fallback for stories in projects missing from /projects.
 		return errors.New("workspace_id is required")
+	}
+	switch c.WorkspaceMode {
+	case "":
+		c.WorkspaceMode = "single"
+	case "single":
+	case "per_project":
+		// Stories get their own workspace per Shortcut project via
+		// workspace_upsert (find-or-create by project id). workspace_id is
+		// the epic home plus the unknown-project fallback.
+	case "team":
+		// Stories get their own workspace per Shortcut team (the org's
+		// actual unit of navigation). Each team workspace carries the
+		// team's workflow (workspace_upsert states), and story placement
+		// comes from the story's workflow state → workflow → team.
+		// workspace_id is the epic home plus the unknown-workflow fallback.
+	default:
+		return errors.New("workspace_mode must be \"single\", \"per_project\" or \"team\"")
 	}
 	if c.LabelMode == "" {
 		c.LabelMode = "merge"
@@ -128,8 +166,8 @@ func (c *Config) validate() error {
 	if c.BackfillDays == 0 {
 		c.BackfillDays = 30
 	}
-	if c.BackfillDays < 0 || c.BackfillDays > 365 {
-		return fmt.Errorf("backfill_days must be 1..365, got %d", c.BackfillDays)
+	if c.BackfillDays < 0 || c.BackfillDays > 4000 {
+		return fmt.Errorf("backfill_days must be 1..4000, got %d", c.BackfillDays)
 	}
 	if c.Enabled && !c.DryRun && c.ActorUserID == 0 {
 		return errors.New("actor_user_id is required when enabled (comments author)")

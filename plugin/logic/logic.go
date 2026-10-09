@@ -6,7 +6,9 @@ package logic
 
 import (
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // TickBudget bounds one sync tick. The wasm invocation deadline is 5s
@@ -22,6 +24,13 @@ func NewTickBudget(start time.Time, dur time.Duration) TickBudget {
 }
 
 func (b TickBudget) Remaining() bool { return b.now().Before(b.deadline) }
+
+// DeadlineMs reports the milliseconds left until the tick deadline. A fetch
+// must clamp its HTTP timeout to this minus a margin, or an in-flight call
+// outlives the wasm invocation cap and the module is killed mid-tick.
+func (b TickBudget) DeadlineMs() int64 {
+	return b.deadline.Sub(b.now()).Milliseconds()
+}
 
 // ShouldSkip is the idempotency guard (contract §6): skip when a mapped item
 // exists and was last synced at/after the Shortcut object's updated_at.
@@ -65,20 +74,73 @@ func AdvanceWatermark(windowEnd time.Time, overlap time.Duration) time.Time {
 	return windowEnd.Add(-overlap)
 }
 
-// ItemTypeName maps a Shortcut story_type to the Windshift item type name.
-// Unknown types return "" (no item_type field is sent; core keeps its
-// default).
-func ItemTypeName(storyType string) string {
-	switch storyType {
-	case "feature":
-		return "Feature"
-	case "bug":
-		return "Bug"
-	case "chore":
-		return "Chore"
+// StatusNameForStateType maps a Shortcut workflow-state type to the Windshift
+// status name. Windshift's default schema has exactly three statuses
+// (Open / In Progress / Done), while Shortcut state names are
+// workspace-customizable ("Completed", "Ready for Deploy", …) so names can't
+// be passed through — the state's type is the stable signal. Unknown types
+// return "" (no status field is sent; core keeps its default).
+func StatusNameForStateType(stateType string) string {
+	switch stateType {
+	case "backlog", "unstarted":
+		return "Open"
+	case "started":
+		return "In Progress"
+	case "done":
+		return "Done"
 	default:
 		return ""
 	}
+}
+
+// titleLine normalizes a Shortcut name to the single-line form the core
+// accepts in a title (or a markdown heading): newlines, tabs, and control
+// runes collapse to single spaces, then the result is trimmed.
+func titleLine(title string) string {
+	var b strings.Builder
+	b.Grow(len(title))
+	for _, r := range title {
+		if r == '\n' || r == '\r' || unicode.IsControl(r) {
+			b.WriteRune(' ')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// truncateRunes cuts s to at most max runes without splitting a rune.
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
+}
+
+// TitleAndDescription adapts a Shortcut name/description pair to the core's
+// title rules (validation.NormalizeTitle: trimmed, ≤255 runes, single line,
+// no control runes). A migration must not drop an item over cosmetic
+// formatting, so names are cleaned and — when they must be cut — the full
+// original name is preserved by prepending it to the description as a
+// markdown heading, keeping whatever description exists below it:
+//
+//	# <full original name>
+//
+//	<description>
+//
+// Names that fit after cleanup pass through with the description untouched.
+func TitleAndDescription(name, description string) (string, string) {
+	full := titleLine(name)
+	title := truncateRunes(full, 255)
+	if title == full {
+		return title, description
+	}
+	heading := "# " + full + "\n\n"
+	if description == "" {
+		return title, heading
+	}
+	return title, heading + description
 }
 
 // RateLimiter is a per-instance sliding-window budget. A fresh WASM instance

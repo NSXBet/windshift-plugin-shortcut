@@ -1,6 +1,6 @@
 # Plan: Shortcut → Windshift Continuous Sync (plugin-side, idempotent)
 
-Created: 2026-10-04 · Status: implemented (v0.2.0)
+Created: 2026-10-04 · Status: implemented (v0.2.0; v0.4.0 adds per-project workspaces — see `shortcut-v1-contracts.md` §7)
 
 ## Problem
 

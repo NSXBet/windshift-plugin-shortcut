@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shortcut → Windshift — Entity Mapping Plan</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --fg: #e6edf3; --muted: #8b949e;
+    --sc: #657ee9;   /* Shortcut accent */
+    --ws: #2ea043;   /* Windshift accent */
+    --warn: #d29922; --bad: #f85149; --good: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+  header h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  header p { color: var(--muted); margin: 0 0 2rem; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+  code { background: #21262d; padding: .15em .4em; border-radius: 5px; }
+  pre { background: #0a0d12; border: 1px solid var(--border); padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; }
+
+  .legend { display: flex; gap: 1.5rem; margin-bottom: 1.8rem; color: var(--muted); font-size: .9rem; flex-wrap: wrap; }
+  .chip { display: inline-block; padding: .1rem .6rem; border-radius: 99px; font-weight: 600; font-size: .8rem; }
+  .chip.sc { background: rgba(101,126,233,.15); color: #93a6f5; border: 1px solid rgba(101,126,233,.4); }
+  .chip.ws { background: rgba(46,160,67,.15); color: #56d364; border: 1px solid rgba(46,160,67,.4); }
+  .chip.open { background: rgba(210,153,34,.12); color: #e3b341; border: 1px solid rgba(210,153,34,.45); }
+
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0 2.5rem; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: .55rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); position: sticky; top: 0; }
+  td.sc-col { border-left: 3px solid var(--sc); }
+  td.ws-col { border-left: 3px solid var(--ws); }
+  .muted { color: var(--muted); }
+  .none { color: var(--bad); font-weight: 600; }
+  .partial { color: var(--warn); font-weight: 600; }
+  .mapped { color: var(--good); font-weight: 600; }
+
+  h2 { font-size: 1.25rem; margin: 2.5rem 0 .4rem; padding-bottom: .3rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.02rem; margin: 1.6rem 0 .3rem; }
+
+  .decision {
+    background: rgba(210,153,34,.07); border: 1px solid rgba(210,153,34,.35);
+    border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0;
+  }
+  .decision b { color: #e3b341; }
+
+  .phases { counter-reset: ph; }
+  .phase { position: relative; border-left: 3px solid var(--border); padding: 0 0 1.4rem 1.6rem; margin-left: .5rem; }
+  .phase::before {
+    counter-increment: ph; content: counter(ph);
+    position: absolute; left: -.85rem; top: 0;
+    width: 1.7rem; height: 1.7rem; border-radius: 50%;
+    background: var(--panel); border: 2px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: .85rem;
+  }
+  .phase h3 { margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Shortcut → Windshift: Entity Mapping &amp; Workspace Decision Plan</h1>
+  <p>
+    Status: <b>implemented (v0.4.0)</b> · supersedes <code>workspace_mode: "per_team"</code> (v0.3.0) ·
+    contracts reference: <code>.agents/plans/shortcut-v1-contracts.md</code> ·
+    live code: <code>plugin/sync.go</code>, <code>plugin/logic/logic.go</code>, <code>plugin/config.go</code>
+  </p>
+  <div class="legend">
+    <span><span class="chip sc">Shortcut</span> source entities</span>
+    <span><span class="chip ws">Windshift</span> target entities</span>
+    <span><span class="chip open">Open decision</span> needs a call</span>
+  </div>
+</header>
+
+<h2>1 · Entity-by-entity comparison</h2>
+
+<table>
+  <tr>
+    <th style="width:15%">Shortcut</th>
+    <th style="width:26%">Windshift target</th>
+    <th style="width:33%">Mapping today (code)</th>
+    <th>Status</th>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Epic</b><br><span class="muted">GET /epics</span></td>
+    <td class="ws-col">Item, <code>item_type_name: "Epic"</code></td>
+    <td class="ws-col">
+      <code>epicRequest()</code> → <code>item_upsert</code> with
+      <code>external_kind:"epic"</code>, status from epic-workflow state name,
+      labels merged, <code>due_date</code> from deadline. Create-only type;
+      parent of stories via <code>parent_external_kind/id</code>.
+    </td>
+    <td class="mapped">Mapped</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Story</b><br><span class="muted">POST /stories/search + GET /stories/{id}</span></td>
+    <td class="ws-col">Item</td>
+    <td class="ws-col">
+      <code>storyRequest()</code> → <code>item_upsert</code> with
+      <code>external_kind:"story"</code>, status from workflow state name,
+      type via <code>logic.ItemTypeName()</code>
+      (<code>feature→Feature</code>, <code>bug→Bug</code>, …; unknown → default),
+      project name (find-only), estimate → <code>story_points</code>,
+      deadline → <code>due_date</code>, epic link → parent.
+    </td>
+    <td class="mapped">Mapped</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Comment</b><br><span class="muted">GET /stories/{id}/comments</span></td>
+    <td class="ws-col">Comment on item</td>
+    <td class="ws-col">
+      Create-only, dedup by KV <code>shortcut:cmt:&lt;id&gt;</code>,
+      author = <code>actor_user_id</code>, notifications suppressed.
+      Soft-deleted comments (<code>deleted:true</code>) are skipped — no
+      comment tombstone is written back.
+    </td>
+    <td class="partial">Mapped, no delete propagation</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Project</b></td>
+    <td class="ws-col">Workspace (v0.4.0 <code>per_project</code>)</td>
+    <td class="ws-col">
+      <code>workspace_upsert</code> find-or-create by
+      <code>(source:"shortcut", external_id = project id)</code>, name = project
+      name; resolved per story, cached per tick. Project <i>name</i> also flows
+      as <code>project_name</code> (find-only hint on <code>item_upsert</code>).
+      Unknown project falls back to <code>config.workspace_id</code>; epics are
+      org-level and always land in <code>config.workspace_id</code>.
+    </td>
+    <td class="mapped">Mapped</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Team</b></td>
+    <td class="ws-col">— (functional unit, not a container)</td>
+    <td class="ws-col">
+      <b>Decision (locked):</b> teams never map to workspaces. Live data
+      (nsx-bet): 11 teams, 6 projects — all owned by one team; 2484 epics 100%
+      team-less. Team→workspace would manufacture access walls that don't exist
+      upstream and resolve only via <code>project.team_id</code> indirection.
+      Teams are functional units for ticket handling/scheduling.
+    </td>
+    <td class="none">Not mapped — by decision</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Workflow state</b></td>
+    <td class="ws-col">Item status name (string)</td>
+    <td class="ws-col">
+      <code>stateName[workflow_state_id]</code> / <code>epicStateName[]</code>,
+      resolved per tick from <code>/workflows</code> + <code>/epic-workflows</code>.
+      Unknown state id → empty string → core keeps existing status.
+    </td>
+    <td class="mapped">Mapped</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Label</b></td>
+    <td class="ws-col">Label (find-or-create)</td>
+    <td class="ws-col">
+      Names only (<code>labelNames()</code>); combined per
+      <code>label_mode: merge|replace</code>.
+    </td>
+    <td class="mapped">Mapped</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Story link / task / iteration / milestone</b></td>
+    <td class="ws-col">—</td>
+    <td class="ws-col muted">Not imported in v1 scope.</td>
+    <td class="none">Not mapped</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>—</b><br><span class="muted">(no Shortcut equivalent)</span></td>
+    <td class="ws-col"><b>Collection</b><br><span class="muted">saved QL query over items</span></td>
+    <td class="ws-col muted">
+      A Windshift Collection is a <em>saved view</em> — a persisted QL query
+      (<code>models.Collection.QLQuery</code> → SQL filter over <code>items</code>,
+      e.g. <code>status = "In Progress"</code>, <code>type = "Feature"</code>,
+      <code>labels IN (…)</code>, workspace scoping). It is not an item, holds no
+      content, and has no external-id surface in the plugin ABI
+      (<code>item_upsert</code>/<code>item_lookup</code> target items only).
+    </td>
+    <td class="none">Not mapped — by design</td>
+  </tr>
+
+  <tr>
+    <td class="sc-col"><b>Deletion of a story</b></td>
+    <td class="ws-col">Tombstone</td>
+    <td class="ws-col">
+      Webhook (HMAC) marks KV <code>shortcut:tomb:story:&lt;id&gt;</code>;
+      end-of-window sweep re-verifies mapped ids with canonical GET (404 → tombstone).
+    </td>
+    <td class="mapped">Mapped</td>
+  </tr>
+</table>
+
+<h2>2 · The workspace question</h2>
+
+<div class="decision">
+  <b>Decision (locked):</b> a Shortcut <b>Team</b> is never a Windshift
+  <b>Workspace</b>. Shortcut teams are functional units for ticket handling
+  and scheduling — org grouping with no access semantics; Windshift
+  workspaces are the access/collaboration boundary (own board, item and
+  collection scoping). Team→workspace 1:1 manufactures access walls that
+  don't exist upstream and resolves only indirectly via
+  <code>project.team_id</code> — many workspaces, mostly empty.
+</div>
+
+<h3>Candidate models</h3>
+<table>
+  <tr>
+    <th>Model</th>
+    <th>Workspace count</th>
+    <th>Pros</th>
+    <th>Cons</th>
+  </tr>
+  <tr>
+    <td><b>A · Single workspace</b><br><span class="muted">everything into config.workspace_id</span></td>
+    <td>1 (operator-chosen)</td>
+    <td>Simplest; already implemented (<code>workspace_mode:"single"</code>); no <code>workspace_upsert</code> calls; no permission edge cases.</td>
+    <td>Project/team context lives only in <code>project_name</code> + labels; one big board.</td>
+  </tr>
+  <tr>
+    <td><b>B · Workspace per project</b><br><span class="muted">Shortcut Project → Windshift Workspace — <b>chosen (v0.4.0)</b></span></td>
+    <td>1 per project</td>
+    <td>Projects are the real work containers in Shortcut; board contents match what users see in Shortcut. Live-data backed: nsx-bet has 6 projects forming a real product partition (Aviator, E-Sports, Infra, New Platform, Bugs, New Features).</td>
+    <td>Stories moving projects change workspace (re-upsert churn); epics need a separate central home.</td>
+  </tr>
+  <tr>
+    <td><b>C · Workspace per team, shared by its projects</b><br><span class="muted">current per_team</span></td>
+    <td>1 per team</td>
+    <td>Board per team mirrors ticket-handling groups. <span class="none">Invalid rationale — teams carry no access semantics; superseded by locked decision.</span></td>
+    <td>Teams ≠ work units; empty workspaces for org-level teams; rejected-by-core handling already shows friction.</td>
+  </tr>
+  <tr>
+    <td><b>D · Workspace per workflow</b><br><span class="muted">Workflow → Workspace, project as section</span></td>
+    <td>1 per workflow</td>
+    <td>Workflows own the states, so status names resolve consistently inside one workspace.</td>
+    <td>Unusual axis; mixing projects in one board.</td>
+  </tr>
+</table>
+
+<h3>Decision (locked, v0.4.0)</h3>
+<p>
+  <b>B (per-project) is implemented.</b> Live-data review overturned the
+  single-workspace recommendation: the nsx-bet org's real structure is
+  project-partitioned (6 projects, one shared workflow), so workspaces mirror
+  the genuine product partition instead of flattening it.
+  <code>workspace_mode:"per_project"</code> resolves each story's workspace
+  from its Shortcut project via <code>workspace_upsert</code>; epics land in
+  the central <code>workspace_id</code> (all 2484 are team-less, org-level).
+  <code>single</code> remains the default for greenfield installs.
+</p>
+<ul>
+  <li>
+    <code>per_team</code> removed in v0.4.0 — C is rejected outright on both
+    semantics (teams carry no access/partition semantics) and live data
+    (one giant + empty shells).
+  </li>
+  <li>
+    Epic↔story parent links verified cross-workspace-safe: core
+    <code>resolveParentItemID</code> resolves mappings globally, no
+    same-workspace constraint.
+  </li>
+  <li>
+    Re-homing existing items: switching modes mid-flight leaves previously
+    synced items in their old workspace (migration decision, out of v1 scope —
+    state reset + re-sync is the lever, documented below).
+  </li>
+</ul>
+
+<h2>3 · Implementation plan</h2>
+
+<div class="phases">
+  <div class="phase">
+    <h3>Ship the sync with single-workspace only</h3>
+    <p>
+      Finish the in-flight stability work (epic-payload streaming, budget pause
+      semantics, incremental cursor checkpoints) with
+      <code>workspace_mode:"single"</code>. Validate end-to-end against the live
+      org: catalog (epics) → stories → comments → sweep.
+    </p>
+  </div>
+  <div class="phase">
+    <h3>Carry team identity as data, not structure</h3>
+    <p>
+      In single mode, append a <code>team:&lt;slug&gt;</code> label
+      (find-or-create) to each item so a future move to per-project or
+      per-team workspaces doesn't lose the grouping. Add
+      <code>team_id</code>/<code>team_name</code> to <code>item_upsert</code>
+      request only as labels — no core wire change.
+    </p>
+  </div>
+  <div class="phase">
+    <h3>Per-project workspaces (v0.4.0 — done)</h3>
+    <p>
+      <code>resolveWorkspace</code> re-keyed from <code>team_id</code> to
+      <code>project_id</code>; epics pinned to <code>workspace_id</code>;
+      <code>per_team</code> mode removed. Core grew two things:
+      <code>workspace_upsert</code> now carries an
+      <code>external_kind</code> ("team"|"project") so team and project ids
+      can't collide, and plugin guests get the real host walltime + monotonic
+      clock (wazero's default is a fake 2022-01-01 clock, which silently
+      froze the sync watermark and disabled the tick budget). E2E harness
+      covers created / fallback / rejected workspace paths. Live deploy:
+      admin → Integrations → Shortcut Migration — verified importing with
+      real 2026 windows; <code>SC-PROJECT-*</code> workspaces created on
+      demand. Fallback bucket = projectless stories
+      (<code>project_id: null</code>, the SRE/queue-workflow tickets).
+    </p>
+  </div>
+  <div class="phase">
+    <h3>Migrate if/when a second mode ships</h3>
+    <p>
+      Items already carry <code>external_kind/external_id</code> in
+      <code>shortcut_sync_items</code>, so re-keying workspaces is a
+      delete-and-resync (tombstone + fresh catalog), not a data migration.
+      Document the operator runbook in the plugin README.
+    </p>
+  </div>
+</div>
+
+<h2>4 · Open questions</h2>
+<table>
+  <tr><th>Question</th><th>Why it matters</th></tr>
+  <tr>
+    <td>Should epics live in the same workspace as their stories?</td>
+    <td>Under model B/C a story's parent epic may resolve to a different workspace — cross-workspace parents need a core decision.</td>
+  </tr>
+  <tr>
+    <td>What happens to a story that moves project (→ workspace) mid-window?</td>
+    <td><code>item_lookup</code> finds the mapping, update path keeps the old workspace. Needs either a workspace-moved tombstone or core support for workspace change on update.</td>
+  </tr>
+  <tr>
+    <td>Comment author = actor_user_id always — keep?</td>
+    <td>Shortcut author ids don't map to Windshift users; current behavior (single actor, suppressed notifications) is the safe default. Revisit if user mapping ever becomes available.</td>
+  </tr>
+  <tr>
+    <td>Do we ever sync Collections (e.g. mirror Shortcut's saved filters / epics views)?</td>
+    <td>Collections are saved QL queries, not data. A v2 could create one static collection per Shortcut epic (<code>external_id = "&lt;epic-id&gt;"</code> filtered by label), but that needs a new plugin host function — out of scope for v1 and pointless until the workspace model (A/B/C) is settled.</td>
+</tr>
+</table>
+
+</div>
+</body>
+</html>

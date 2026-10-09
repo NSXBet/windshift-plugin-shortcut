@@ -1,12 +1,13 @@
 # windshift-plugin-shortcut
 
-Shortcut → Windshift migration plugin. One-way continuous sync: Shortcut
-stories and comments are imported into a Windshift workspace incrementally
-(resumable 24 h windows over an advancing watermark), container entities
-(epics, projects, workflow states) are synced first as the mapping basis, and
-Shortcut-side deletes are propagated as tombstone comments via a signed
-webhook plus a per-window deletion sweep. Operators configure and monitor the
-sync from an admin-tab panel.
+Shortcut → Windshift migration plugin. One-way continuous sync:
+stories and comments are imported into Windshift workspaces incrementally
+(resumable 24 h windows over an advancing watermark) — one shared workspace,
+or one per Shortcut project. Container entities (epics, projects, workflow
+states) are synced first as the mapping basis, and Shortcut-side deletes are
+propagated as tombstone comments via a signed webhook plus a per-window
+deletion sweep. Operators configure and monitor the sync from an admin-tab
+panel.
 
 ## What ships now
 
@@ -71,10 +72,11 @@ same routes directly (`GET/POST /api/plugins/shortcut/config`). Fields:
 
 | Field | Meaning |
 |---|---|
+| `workspace_mode` | `single` (all items into one workspace) or `per_project` (one workspace per Shortcut project, resolved on demand) |
 | `token` | Shortcut API token (write-only; save with the field blank to keep the stored one) |
 | `enabled` | Master switch — a disabled plugin skips ticks |
 | `dry_run` | Read-only mode: everything is fetched and counted, nothing is written to Windshift |
-| `workspace_id` | Target Windshift workspace id |
+| `workspace_id` | Target Windshift workspace **decimal id** (as in `/api/v2/workspaces`) — the only workspace in `single` mode; the epic home + unknown-project fallback in `per_project` mode |
 | `project_ids` | Shortcut projects to sync (empty = all) |
 | `label_mode` | `merge` (add to existing labels) or `replace` |
 | `actor_user_id` | Windshift user id that authors imported comments — required unless dry-run |
@@ -84,8 +86,16 @@ same routes directly (`GET/POST /api/plugins/shortcut/config`). Fields:
 Secrets are never echoed back — `GET /config` reports only
 `token_set`/`webhook_secret_set` booleans.
 
-## Running the sync
+## Workspace modes
 
+- `single` — every imported story/epic lands in the configured workspace, exactly as v0.2.0.
+- `per_project` — each Shortcut project gets its own Windshift workspace (resolved via the
+  core's find-or-create, cached per tick). Stories inherit their project's workspace; epics
+  are org-level and always land in `workspace_id`; stories whose project is missing from
+  the `/projects` listing fall back to `workspace_id`. A project the core rejects is recorded
+  as an item-level error and retried on the next pass — the rest of the window keeps syncing.
+
+## Running the sync
 - The manifest schedule ticks every 5 minutes; each tick processes as much as
   its ~4 s budget allows and parks its cursors, so a slow initial backfill
   resumes tick after tick.
@@ -137,6 +147,11 @@ Details worth knowing:
 - **Asset edits need no reload**: core reads plugin assets from disk on every
   request — edit `plugin/assets/*`, then just refresh the browser tab. Only
   wasm/manifest changes need `reload`.
+- **`reload` re-parses the manifest but can keep serving the old compiled
+  wasm** — after wasm changes the reliable deploy is `container compose -f
+  compose.yaml down && up -d` (a ~7s bounce; the bind mount is re-read at
+  boot). Symptom: `/status` reports the new version but tick behavior is
+  stale.
 - **Test harness pins the version**: `test/main.go` asserts the manifest
   version, so bump it there together with `plugin/manifest.json` or `verify`
   fails.
@@ -162,6 +177,6 @@ task clean
 ## Releasing
 
 1. Bump `plugin/manifest.json`'s `version`.
-2. Tag the same version and push: `git tag v0.2.0 && git push --tags`.
+2. Tag the same version and push: `git tag v0.3.0 && git push --tags`.
 3. CI builds, runtime-tests, and attaches `shortcut.zip` + `checksums.txt`
    to the release. The tag must match the manifest version.

@@ -1,6 +1,8 @@
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 
 // Guest-side Extism ABI for Windshift plugins.
 //
@@ -33,6 +35,12 @@ func extismStoreU8(ptr extismPointer, value uint32)
 //go:wasmimport extism:host/env load_u8
 func extismLoadU8(ptr extismPointer) uint32
 
+//go:wasmimport extism:host/env store_u64
+func extismStoreU64(ptr extismPointer, value uint64)
+
+//go:wasmimport extism:host/env load_u64
+func extismLoadU64(ptr extismPointer) uint64
+
 //go:wasmimport extism:host/env length
 func extismLength(ptr extismPointer) uint64
 
@@ -57,26 +65,37 @@ func extismConfigGet(ptr extismPointer) extismPointer
 // --- memory helpers ---
 
 // allocBytes copies b into a host-allocated block and returns its offset.
+// 8-byte chunks: one import call per byte is ~4M calls for the 4 MB epics
+// payload and blows the 5s wasm cap (the original /epics death).
 func allocBytes(b []byte) extismPointer {
 	if len(b) == 0 {
 		return 0
 	}
 	ptr := extismAlloc(uint64(len(b)))
-	for i, v := range b {
-		extismStoreU8(ptr+extismPointer(i), uint32(v))
+	n := len(b) / 8
+	for i := 0; i < n; i++ {
+		extismStoreU64(ptr+extismPointer(i*8), binary.LittleEndian.Uint64(b[i*8:]))
+	}
+	for i := n * 8; i < len(b); i++ {
+		extismStoreU8(ptr+extismPointer(i), uint32(b[i]))
 	}
 	return ptr
 }
 
-// readBytes copies the host-tracked block at ptr back into a fresh slice.
+// readBytes copies the host-tracked block at ptr back into a fresh slice,
+// 8-byte chunks like allocBytes.
 func readBytes(ptr extismPointer) []byte {
 	n := extismLength(ptr)
 	if n == 0 {
 		return nil
 	}
 	b := make([]byte, n)
-	for i := range b {
-		b[i] = byte(extismLoadU8(ptr+extismPointer(i)))
+	nw := int(n) / 8
+	for i := 0; i < nw; i++ {
+		binary.LittleEndian.PutUint64(b[i*8:], extismLoadU64(ptr+extismPointer(i*8)))
+	}
+	for i := nw * 8; i < int(n); i++ {
+		b[i] = byte(extismLoadU8(ptr + extismPointer(i)))
 	}
 	return b
 }

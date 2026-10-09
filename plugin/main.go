@@ -16,14 +16,29 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 )
 
-const (
+//go:embed manifest.json
+var manifestJSON []byte
+
+var (
 	pluginName = "shortcut"
-	version    = "0.2.0"
+	version    = "unknown"
 	probeKey   = "shortcut:probe"
 )
+
+// version comes from manifest.json (single source of truth, kept in sync by
+// the release task), not a copy-pasted const that drifts on every bump.
+func init() {
+	var m struct {
+		Version string `json:"version"`
+	}
+	if json.Unmarshal(manifestJSON, &m) == nil && m.Version != "" {
+		version = m.Version
+	}
+}
 
 var jsonHeaders = map[string]string{"Content-Type": "application/json"}
 
@@ -75,6 +90,8 @@ func route(req HTTPRequest) HTTPResponse {
 		return handleSyncTick()
 	case "POST /sync/reset":
 		return handleResetState()
+	case "POST /sync/purge":
+		return handlePurgeSync()
 	default:
 		body, _ := json.Marshal(map[string]string{"error": "route not found: " + req.Method + " " + req.Path})
 		return HTTPResponse{StatusCode: 404, Headers: jsonHeaders, Body: string(body)}

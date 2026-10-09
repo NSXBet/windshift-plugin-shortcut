@@ -15,7 +15,7 @@ services:
     # create /data/windshift.db. Dev-only override; prod chart sets its own
     # context.
     user: "0:0"
-    command: ["-no-csrf", "-log-level", "info"]
+    command: ["-no-csrf", "-log-level", "debug"]
     ports:
       - "8080:8080"
     environment:

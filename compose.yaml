@@ -6,6 +6,15 @@
 # via reload. Rebuild the image from the core repo after core-side changes:
 #   container build -t windshift-core:dev-items ../windshift-core-internal
 #
+# If buildkit dies on disk pressure (it fills its VM fast), build the binary
+# on the host and package a scratch image instead — the runtime stage is
+# binary + certs + zoneinfo + /data skeleton on FROM scratch:
+#   env -u GOROOT GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+#     ~/.local/share/mise/installs/go/1.27.0/bin/go build -ldflags "-s -w \
+#     -X 'windshift/internal/version.ReleaseName=${RELEASE_NAME}'" -o /tmp/wsimg/windshift main.go
+#   (stage Dockerfile, data/.keep, /etc/ssl/cert.pem, cp -RL /usr/share/zoneinfo)
+#   container build -t windshift-core:dev-items /tmp/wsimg
+#
 #   container compose -f compose.yaml up -d     (task dev)
 #   fresh state:                                (task clean)
 services:

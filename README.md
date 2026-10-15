@@ -15,8 +15,9 @@ panel.
 |---|---|
 | Scheduled sync | `sync_tick` every 5 m (manifest schedule): catalog pass → windowed story import → comment pass → deletion sweep; resumable cursors in per-plugin KV |
 | Delete webhook | `POST /webhook/shortcut` — HMAC-SHA256 (`Payload-Signature`) verified; story delete/archive → tombstone comment + KV marker |
+| Full-account dump & restore | `POST /dump/start`, auto-ticked by a `dump_tick` schedule (10 s) plus the manual `POST /dump/tick` → NDJSON pieces via `GET /dump/piece?n=`; a CLI or the panel replays chunks via `POST /restore/chunk?seq=n` |
 | Operator routes | `GET/POST /config` (secrets write-only), `POST /sync/tick`, `POST /sync/reset`, `POST /sync/purge` (delete everything the sync ever created for a clean re-import), `GET /status` |
-| Admin-tab UI | `admin.tab` point, iframe at `/api/plugins/shortcut/assets/index.html` — status panel + config form + tick/reset buttons |
+| Admin-tab UI | `admin.tab` point, iframe at `/api/plugins/shortcut/assets/index.html` — status panel + config form + tick/reset buttons + dump/restore section; the panel polls itself while a dump or restore is in flight |
 | Persistent state | `kv_get`/`kv_set` host functions — per-plugin KV, survives restarts |
 | Release | `task build` → `dist/shortcut.zip` (`manifest.json` + `plugin.wasm` + `assets/`), attached to a GitHub Release by CI |
 
@@ -118,6 +119,37 @@ the story.
   a window with a canonical GET and tombstones anything Shortcut has
   hard-deleted without a webhook. Tombstoned items are commented and skipped
   thereafter.
+
+## Full-account dump & restore
+- **Dump** (`POST /dump/start`, then `POST /dump/tick` until `phase: done`):
+  streams every entity — including data the incremental sync never touches
+  (members, milestones, archived stories, epic comments, raw originals) — as
+  one line-oriented NDJSON file assembled from 256 KiB KV pieces
+  (`GET /dump/piece?n=0..pieces-1`, concatenate in order; while a dump runs,
+  `n == pieces` serves the open buffer, so partial files download before the
+  `end` line exists). The first line is
+  the file `meta`, the last is `end`; the stories scan runs newest-first
+  (empty gap years before the org's first story cost span-doubled windows
+  last), and iteration and member bodies are emitted
+  *before* their window's stories — iterations during window freeze,
+  assignees fetched per story (never as a full roster) — so restore resolves
+  story→sprint and story→user links at upsert time. Ticks run on a
+  `dump_tick` schedule every 10 s plus the manual route, and are budget- and
+  rate-limited: when a tick pauses, its cursor is
+  already saved and the next tick resumes — a full org takes minutes of ticks,
+  not one.
+- **Restore** (`POST /restore/chunk?seq=n`): post line-aligned chunks; re-post
+  the same chunk until the response marks it consumed, then advance. The first
+  chunk must open with the file's `meta` line (mismatched filename → 400);
+  a stale `seq` → 409. Replay runs through the sync engine offline: items that
+  already map and comments that already synced are skipped, so a
+  crash-and-repost costs fetch time only. A partial file (no `end` line —
+  downloaded while the dump was still running) restores everything it
+  contains; the panel warns on download so the tail cut isn't a surprise.
+- **Discard** (`POST /dump/discard`, `POST /restore/discard`) deletes the
+  state and pieces — use after a completed restore, before restoring again.
+  The admin panel wires all of this: Start dump / Dump tick / Download file /
+  Restore from file.
 
 ## Registry rules
 

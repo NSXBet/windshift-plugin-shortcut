@@ -3,8 +3,8 @@ version: "3"
 vars:
   PLUGIN: shortcut
   BASE: http://localhost:8080
-  DEV_USER: dev
-  DEV_PASS: windshift-dev-1
+  DEV_USER: admin
+  DEV_PASS: admin
 
 tasks:
   build:
@@ -27,7 +27,7 @@ tasks:
           unzip -l dist/{{.PLUGIN}}.zip | grep -q "assets/$(basename "$f")" || { echo "missing from zip: $f" >&2; exit 1; }
         done
 
-  dev:
+  run:
     desc: (Re)start the prod core image with the local plugin mounted (localhost:8080)
     cmds:
       - container compose -f compose.yaml up

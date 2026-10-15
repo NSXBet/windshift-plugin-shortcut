@@ -1,28 +1,13 @@
-# Local dev: NSXBet fork's core image (upstream v0.8.9 + the plugin-asset
-# CSP fix + the shortcut item_upsert/item_lookup/create_comment host
-# functions from internal/v0.8.9, e84ca734 — not yet in any published tag),
-# with the locally built plugin bind-mounted in. SQLite under /data (named
-# volume); plugin assets are re-read from disk per request, wasm/manifest
-# via reload. Rebuild the image from the core repo after core-side changes:
-#   container build -t windshift-core:dev-items ../windshift-core-internal
-#
-# If buildkit dies on disk pressure (it fills its VM fast), build the binary
-# on the host and package a scratch image instead — the runtime stage is
-# binary + certs + zoneinfo + /data skeleton on FROM scratch:
-#   env -u GOROOT GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-#     ~/.local/share/mise/installs/go/1.27.0/bin/go build -ldflags "-s -w \
-#     -X 'windshift/internal/version.ReleaseName=${RELEASE_NAME}'" -o /tmp/wsimg/windshift main.go
-#   (stage Dockerfile, data/.keep, /etc/ssl/cert.pem, cp -RL /usr/share/zoneinfo)
-#   container build -t windshift-core:dev-items /tmp/wsimg
-#
-#   container compose -f compose.yaml up -d     (task dev)
-#   fresh state:                                (task clean)
+# Dev stack: published core image — ghcr.io/nsxbet/windshift:v0.8.9-p1
+# (rebuilt 2026-10-10 from internal/v0.8.9 @2b0d7e4f, carries the Shortcut
+# host functions item_upsert/item_lookup/member_upsert/iteration_upsert)
+# with the locally built plugin bind-mounted at /plugins.
+# Plugin loop: task build && task install && task run · hot reload: task reload · reset: task clean.
 services:
   windshift:
-    image: windshift-core:dev-items
-    # v0.8.9 image runs as 65534; named volumes are root-owned → SQLite can't
-    # create /data/windshift.db. Dev-only override; prod chart sets its own
-    # context.
+    image: ghcr.io/nsxbet/windshift:v0.8.9-p1
+    # Image runs as 65534, but named volumes are root-owned → SQLite can't
+    # create /data/windshift.db. Dev-only override; prod chart sets its own.
     user: "0:0"
     command: ["-no-csrf", "-log-level", "debug"]
     ports:
@@ -30,6 +15,9 @@ services:
     environment:
       SSO_SECRET: dev-secret-for-testing
       PLUGIN_DIRS: /plugins
+      # Sync ticks make several Shortcut API calls; the 5s default ceiling
+      # kills an invocation on a single slow round-trip.
+      PLUGINS_TIMEOUT: "120"
     volumes:
       - ./.dev/plugins:/plugins
       - windshift-dev-data:/data

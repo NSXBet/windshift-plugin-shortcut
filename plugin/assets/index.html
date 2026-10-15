@@ -87,6 +87,24 @@
     <pre id="tick-out" class="errlist" hidden></pre>
   </section>
 
+  <section>
+    <h2>Dump &amp; restore</h2>
+    <div id="dr-status">loading&hellip;</div>
+    <div class="row">
+      <button id="dump-start">Start dump</button>
+      <button id="dump-tick">Dump tick</button>
+      <button id="dump-download" disabled>Download file</button>
+      <button id="dump-discard" class="danger">Discard dump</button>
+    </div>
+    <div class="row">
+      <input id="restore-file" type="file" accept=".ndjson,.json,.txt" style="width:auto" />
+      <button id="restore-run">Restore from file</button>
+      <button id="restore-discard" class="danger">Discard restore</button>
+    </div>
+    <div class="row"><span class="msg" id="dr-msg" role="status"></span></div>
+    <pre id="dr-err" class="errlist" hidden></pre>
+  </section>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

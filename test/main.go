@@ -145,6 +145,10 @@ var (
 	searchBody           = defaultSearchBody
 	workflowsBody        = defaultWorkflowsBody
 	teamsBody            = defaultTeamsBody
+	membersBody          = `[]`                // dump's /members list pass
+	epicsBody            = `[]`                // dump's /epics list pass
+	searchWindowFilter   = false               // /stories/search honors updated_at window + archived pass
+	epicComments         = map[string]string{} // /epics/{id}/comments per epic id
 )
 
 // perProjectStoriesJSON is a search payload spanning all three workspace
@@ -189,10 +193,17 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 		return body(`[{"id":2,"name":"Epic WF","states":[{"id":21,"name":"Prioritized","type":"todo"}]}]`)
 	case path == "/projects":
 		return body(projectsBody)
+	case path == "/members":
+		return body(membersBody)
 	case path == "/epics":
 		if s := os.Getenv("BIG_EPICS"); s != "" {
 			n, _ := strconv.Atoi(s)
 			return body(bigEpicsJSON(n))
+		}
+		return body(epicsBody)
+	case strings.HasPrefix(path, "/epics/") && strings.HasSuffix(path, "/comments"):
+		if b, ok := epicComments[strings.TrimSuffix(strings.TrimPrefix(path, "/epics/"), "/comments")]; ok {
+			return body(b)
 		}
 		return body(`[]`)
 	case strings.HasPrefix(path, "/epics/"):
@@ -224,7 +235,7 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 		}
 		return httpFetchResp{Status: 404, Body: []byte(`{"message":"iteration not found"}`)}
 	case path == "/stories/search":
-		return body(searchBody)
+		return body(filterSearchByWindow(searchBody, req))
 	case strings.HasPrefix(path, "/stories/") && strings.HasSuffix(path, "/comments"):
 		switch strings.TrimSuffix(strings.TrimPrefix(path, "/stories/"), "/comments") {
 		case "101":
@@ -232,8 +243,14 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 				{"id":9001,"story_id":101,"text":"hello","author_id":"77","created_at":"2026-10-01T10:00:00Z","updated_at":"2026-10-01T10:00:00Z","deleted":false,"position":0},
 				{"id":9002,"story_id":101,"text":"gone","author_id":"77","created_at":"2026-10-01T11:00:00Z","updated_at":"2026-10-01T11:00:00Z","deleted":true,"position":1}
 			]`)
-		case "102", "104", "105", "201", "202", "203":
+		case "102", "104", "105", "202", "203":
 			return body(`[]`)
+		case "201":
+			return body(`[
+				{"id":9101,"story_id":201,"text":"dump comment one","author_id":"77","created_at":"2021-10-05T11:00:00Z","updated_at":"2021-10-05T11:00:00Z","deleted":false,"position":0},
+				{"id":9102,"story_id":201,"text":"dump comment two","author_id":"77","created_at":"2021-10-05T12:00:00Z","updated_at":"2021-10-05T12:00:00Z","deleted":false,"position":1},
+				{"id":9103,"story_id":201,"text":"deleted dump comment","author_id":"77","created_at":"2021-10-05T13:00:00Z","updated_at":"2021-10-05T13:00:00Z","deleted":true,"position":2}
+			]`)
 		}
 		return httpFetchResp{Status: 404, Body: []byte(`{"message":"story not found"}`)}
 	case strings.HasPrefix(path, "/stories/"):
@@ -257,6 +274,70 @@ func mockShortcutAPI(req httpFetchReq) httpFetchResp {
 		return httpFetchResp{Status: 404, Body: []byte(`{"message":"story not found"}`)}
 	}
 	return httpFetchResp{Status: 404, Body: []byte(`{"message":"unmocked: ` + req.URL + `"}`)}
+}
+
+// filterSearchByWindow applies the dump's window + archived-pass filters to
+// the fixture stories, mirroring the real POST /stories/search contract
+// (inclusive start, exclusive end). Off by default: the legacy fixtures
+// stamp stories at realNow-2h and their tests assert on the full body
+// regardless of any window.
+func filterSearchByWindow(bodyJSON string, req httpFetchReq) string {
+	if !searchWindowFilter {
+		return bodyJSON
+	}
+	var q struct {
+		UpdatedAtStart string `json:"updated_at_start"`
+		UpdatedAtEnd   string `json:"updated_at_end"`
+		Archived       bool   `json:"archived"`
+	}
+	if err := json.Unmarshal([]byte(req.Body), &q); err != nil || q.UpdatedAtStart == "" || q.UpdatedAtEnd == "" {
+		return bodyJSON
+	}
+	start, err1 := time.Parse(time.RFC3339, q.UpdatedAtStart)
+	end, err2 := time.Parse(time.RFC3339, q.UpdatedAtEnd)
+	if err1 != nil || err2 != nil {
+		return bodyJSON
+	}
+	var all []map[string]any
+	if err := json.Unmarshal([]byte(bodyJSON), &all); err != nil {
+		return bodyJSON
+	}
+	out := make([]map[string]any, 0, len(all))
+	for _, s := range all {
+		archived, _ := s["archived"].(bool)
+		if archived != q.Archived {
+			continue
+		}
+		ts, _ := s["updated_at"].(string)
+		t, err := time.Parse(time.RFC3339, ts)
+		if err != nil || t.Before(start) || !t.Before(end) {
+			continue
+		}
+		out = append(out, s)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return bodyJSON
+	}
+	return string(raw)
+}
+
+// dumpStoriesJSON is the dump E2E's search fixture: stories stamped inside
+// the guest-clock range the dump tiles ([2000-01-01, 2021-12-05)), so the
+// window-aware mock serves them on exactly one window. 201 carries the full
+// mapping surface (epic, sprint, assignee, labels, estimate, deadline);
+// 202 is bare; 203 is archived and only served on the archived pass.
+func dumpStoriesJSON() string {
+	return `[
+		{"id":201,"name":"Dump Alpha","description":"alpha body","story_type":"feature","workflow_state_id":11,"project_id":5,"epic_id":6001,
+		 "owner_ids":["687a7ce8-ae4b-4528-975d-bfe3fdc8bca8"],"iteration_id":4242,"estimate":3,"deadline":"2021-11-01T00:00:00Z",
+		 "labels":[{"name":"core","id":51}],"archived":false,
+		 "app_url":"https://app.shortcut.com/demo/story/201","created_at":"2021-10-05T09:00:00Z","updated_at":"2021-10-05T10:00:00Z"},
+		{"id":202,"name":"Dump Beta","description":"","story_type":"bug","workflow_state_id":11,"project_id":5,"archived":false,
+		 "app_url":"https://app.shortcut.com/demo/story/202","created_at":"2021-10-05T09:30:00Z","updated_at":"2021-10-05T10:00:00Z"},
+		{"id":203,"name":"Dump Archived","description":"archived body","story_type":"chore","workflow_state_id":11,"project_id":5,"epic_id":6001,
+		 "archived":true,"app_url":"https://app.shortcut.com/demo/story/203","created_at":"2021-10-05T09:45:00Z","updated_at":"2021-10-05T10:00:00Z"}
+	]`
 }
 
 // bigEpicsJSON emits n realistic epic objects (~2KB each) for reproducing
@@ -684,11 +765,12 @@ func main() {
 	}
 	defer plugin.Close(ctx)
 
-	check("GET /status", call(ctx, plugin, "GET", "/status", nil, ""), 200, `{"kv":true,"plugin":"shortcut","version":"0.4.0"}`)
+	check("GET /status", call(ctx, plugin, "GET", "/status", nil, ""), 200, `{"kv":true,"plugin":"shortcut","version":"0.5.0"}`)
 	check("GET /unmatched route", call(ctx, plugin, "GET", "/unmatched", nil, ""), 404, `{"error":"route not found: GET /unmatched"}`)
 	runSyncE2E(ctx, plugin)
 	runPerProjectE2E(ctx, plugin)
 	runTeamE2E(ctx, plugin)
+	runDumpRestoreE2E(ctx, plugin)
 	runBackfillSweepSkipE2E(ctx, plugin)
 	runBigEpicsCondenseE2E(ctx, plugin)
 	runWebhookTests(ctx, plugin)
@@ -1037,6 +1119,199 @@ func runBackfillSweepSkipE2E(ctx context.Context, plugin *extism.Plugin) {
 		fmt.Sprintf("gets=%d want %d", len(getStoryCalls), afterStories+2))
 }
 
+// runDumpRestoreE2E covers the full-account dump + restore round-trip: the
+// dump streams a window-filtered fixture into NDJSON pieces, the harness
+// reassembles them like the CLI would, and POST /restore/chunk replays the
+// file into a purged workspace. A second identical restore proves
+// idempotence — everything must skip via ShouldSkip and comment dedup with
+// zero new writes. The fixture also pins the ordering invariants restore
+// depends on: the iteration line precedes its story (story→sprint resolves
+// at upsert time) and the member line precedes it (assignee resolution).
+func runDumpRestoreE2E(ctx context.Context, plugin *extism.Plugin) {
+	fmt.Printf("\n--- dump + restore ---\n")
+	resetE2E()
+	kv["shortcut:config"] = testConfigJSON
+	check("purge before dump E2E", call(ctx, plugin, "POST", "/sync/purge", nil, ""), 200, "")
+
+	// Install the dump fixture: window-stamped stories so the window-aware
+	// mock serves them on exactly one of the ~8000 tiled windows.
+	searchBody = dumpStoriesJSON()
+	membersBody = `[{"id":"687a7ce8-ae4b-4528-975d-bfe3fdc8bca8","profile":{"name":"Dev Yuri","email_address":"yuri@nsx.dev","mention_name":"dev.yuri"}}]`
+	epicsBody = `[{"id":6001,"name":"Dump Epic","description":"","app_url":"https://app.shortcut.com/demo/epic/6001","epic_state_id":21,"created_at":"2021-10-01T00:00:00Z","updated_at":"2021-10-02T00:00:00Z"}]`
+	epicComments["6001"] = `[{"id":8101,"epic_id":6001,"text":"epic note","author_id":"77","created_at":"2021-10-05T08:00:00Z","updated_at":"2021-10-05T08:00:00Z","deleted":false,"position":0}]`
+	searchWindowFilter = true
+
+	// --- dump: start, tick to done, assemble the pieces ---
+	check("dump start", call(ctx, plugin, "POST", "/dump/start", nil, `{"force":false}`), 200, "")
+	// The rate limiter caps each tick at ~180 fetches, so the ~8000-window
+	// scan needs ~50 ticks; every tick persists its cursor and resumes.
+	dumpDone := false
+	for i := 0; i < 100 && !dumpDone; i++ {
+		resp := call(ctx, plugin, "POST", "/dump/tick", nil, "")
+		var st struct {
+			Phase  string `json:"phase"`
+			Error  string `json:"error"`
+			Counts struct {
+				Stories       int `json:"stories"`
+				Comments      int `json:"comments"`
+				Iterations    int `json:"iterations"`
+				Epics         int `json:"epics"`
+				EpicComments  int `json:"epic_comments"`
+				Members       int `json:"members"`
+			} `json:"counts"`
+		}
+		if resp.StatusCode != 200 || json.Unmarshal([]byte(resp.Body), &st) != nil {
+			want(false, "dump tick", resp.Body)
+			return
+		}
+		want(st.Error == "", "dump tick error", st.Error)
+		dumpDone = st.Phase == "done"
+		if st.Phase != "done" {
+			continue
+		}
+		want(st.Counts.Stories == 3 && st.Counts.Comments == 3 && st.Counts.Iterations == 1 &&
+			st.Counts.Epics == 1 && st.Counts.EpicComments == 1 && st.Counts.Members == 1,
+			"dump counts", fmt.Sprintf("%+v", st.Counts))
+	}
+	want(dumpDone, "dump completes within tick cap", "")
+
+	// Assemble the file exactly like the CLI: raw NDJSON pieces concatenated.
+	var file string
+	for n := 0; ; n++ {
+		resp := call(ctx, plugin, "GET", "/dump/piece", map[string]string{"n": strconv.Itoa(n)}, "")
+		if resp.StatusCode != 200 {
+			break
+		}
+		file += resp.Body
+	}
+	lines := strings.Split(strings.TrimSuffix(file, "\n"), "\n")
+	typeIdx := func(t string) int {
+		for i, ln := range lines {
+			if strings.HasPrefix(ln, `{"type":"`+t+`"`) {
+				return i
+			}
+		}
+		return -1
+	}
+	want(len(lines) > 10, "dump file has all lines", fmt.Sprintf("lines=%d", len(lines)))
+	want(typeIdx("meta") == 0, "file opens with meta", lines[0][:min(80, len(lines[0]))])
+	// Ordering invariants: catalog lines precede their stories.
+	itIdx, storyIdx := typeIdx("iterations"), -1
+	for i, ln := range lines {
+		if strings.Contains(ln, "Dump Alpha") { // story lines pass the body through raw
+			storyIdx = i
+			break
+		}
+	}
+	want(itIdx != -1 && storyIdx != -1 && itIdx < storyIdx, "iteration line precedes story 201",
+		fmt.Sprintf("it=%d story=%d", itIdx, storyIdx))
+	memIdx := typeIdx("members")
+	want(memIdx != -1 && memIdx < storyIdx, "member line precedes story 201",
+		fmt.Sprintf("mem=%d story=%d", memIdx, storyIdx))
+	epIdx, epCmtIdx := typeIdx("epics"), typeIdx("epic_comments")
+	want(epIdx != -1 && epCmtIdx != -1 && epIdx < epCmtIdx, "epic precedes its comments",
+		fmt.Sprintf("epic=%d cmt=%d", epIdx, epCmtIdx))
+	want(typeIdx("end") == len(lines)-1, "file ends with end line", fmt.Sprintf("n=%d", len(lines)))
+
+	// --- restore: meta-first rejection, wrong-seq rejection, full replay ---
+	check("restore discard (clean slate)", call(ctx, plugin, "POST", "/restore/discard", nil, ""), 204, "")
+	check("restore rejects non-meta first chunk", call(ctx, plugin, "POST", "/restore/chunk", map[string]string{"seq": "0"}, strings.Join(lines[1:], "\n")+"\n"), 400, "")
+
+	// Chunked replay: split the file into 2 chunks mid-way through the
+	// stories so the story/sprint/assignee resolution crosses a chunk
+	// boundary (buffered state must survive).
+	half := storyIdx + 1
+	done := false
+	done = postRestoreChunks(ctx, plugin, 0, lines[:half])
+	check("restore rejects out-of-order seq", call(ctx, plugin, "POST", "/restore/chunk", map[string]string{"seq": "3"}, lines[0]+"\n"), 409, "")
+	done = postRestoreChunks(ctx, plugin, 1, lines[half:])
+	want(done, "restore completes", "")
+
+	// First restore: two new stories + one archived + epic + sprint + member
+	// assignment + 2 story comments + 1 epic comment; zero errors.
+	var st struct {
+		Counts struct {
+			Created  int      `json:"created"`
+			Updated  int      `json:"updated"`
+			Skipped  int      `json:"skipped"`
+			Errors   int      `json:"errors"`
+			Comments int      `json:"comments"`
+		} `json:"counts"`
+		TypeCounts map[string]int `json:"type_counts"`
+	}
+	resp := call(ctx, plugin, "GET", "/restore/status", nil, "")
+	_ = json.Unmarshal([]byte(resp.Body), &st)
+	want(st.Counts.Created == 4 && st.Counts.Comments == 3 && st.Counts.Errors == 0,
+		"restore counts", fmt.Sprintf("%+v type=%v", st.Counts, st.TypeCounts))
+	if m := items["story/201"]; m.req.Title != "Dump Alpha" || m.req.IterationExternalID != 4242 ||
+		m.req.AssigneeExternalID != "687a7ce8-ae4b-4528-975d-bfe3fdc8bca8" ||
+		m.req.ParentExternalID != 6001 || m.req.ParentExternalKind != "epic" {
+		want(false, "restore: story 201 mapping surface", fmt.Sprintf("%+v", m.req))
+	}
+	if m := items["story/203"]; m.req.Title != "Dump Archived" {
+		want(false, "restore: archived story imported", fmt.Sprintf("%+v", m.req))
+	} else {
+		want(m.req.ParentExternalID == 6001, "restore: archived story epic link", fmt.Sprintf("%+v", m.req))
+	}
+	// The offline ensure* paths upsert straight from the buffered lines —
+	// exactly one call each, carrying the dump's data.
+	if len(memberCalls) != 1 || memberCalls[0].Name != "Dev Yuri" ||
+		memberCalls[0].Email != "yuri@nsx.dev" || memberCalls[0].Username != "dev.yuri" {
+		want(false, "restore: member upserted from buffered line", fmt.Sprintf("%+v", memberCalls))
+	}
+	if len(iterationCalls) != 1 || iterationCalls[0].Name != "Sprint 42" || iterationCalls[0].Workspace != "demo" {
+		want(false, "restore: iteration upserted from buffered line", fmt.Sprintf("%+v", iterationCalls))
+	}
+	beforeUpserts := len(upsertCalls)
+	beforeComments := len(commentCalls)
+
+	// --- second restore: byte-identical file replays as pure skips ---
+	check("restore discard (replay)", call(ctx, plugin, "POST", "/restore/discard", nil, ""), 204, "")
+	postRestoreChunks(ctx, plugin, 0, lines[:half])
+	done = postRestoreChunks(ctx, plugin, 1, lines[half:])
+	want(done, "replay completes", "")
+	resp = call(ctx, plugin, "GET", "/restore/status", nil, "")
+	_ = json.Unmarshal([]byte(resp.Body), &st)
+	want(st.Counts.Created == 0 && st.Counts.Updated == 0 && st.Counts.Comments == 0 && st.Counts.Errors == 0 &&
+		st.Counts.Skipped == 7, // 4 stories + epic + 2 story comments + 1 epic comment
+		"replay: everything skipped, nothing re-written",
+		fmt.Sprintf("%+v type=%v", st.Counts, st.TypeCounts))
+	want(len(upsertCalls) == beforeUpserts, "replay: zero upsert calls", fmt.Sprintf("%d→%d", beforeUpserts, len(upsertCalls)))
+	want(len(commentCalls) == beforeComments, "replay: zero comment calls",
+		fmt.Sprintf("%d→%d", beforeComments, len(commentCalls)))
+
+	// --- restore after done: idempotent re-posts return the status ---
+	check("re-post chunk after done", call(ctx, plugin, "POST", "/restore/chunk", map[string]string{"seq": "0"}, lines[0]+"\n"), 200, "")
+
+	// Leave the canonical fixtures for later sections.
+	resetE2E()
+	kv["shortcut:config"] = testConfigJSON
+	check("purge after dump E2E", call(ctx, plugin, "POST", "/sync/purge", nil, ""), 200, "")
+}
+
+// postRestoreChunks re-posts one line-aligned chunk until chunk_done, the
+// way the CLI does across budget pauses. Returns the response's done flag.
+func postRestoreChunks(ctx context.Context, plugin *extism.Plugin, seq int, body []string) bool {
+	done := false
+	payload := strings.Join(body, "\n") + "\n"
+	for post := 0; post < 5 && !done; post++ {
+		resp := call(ctx, plugin, "POST", "/restore/chunk", map[string]string{"seq": strconv.Itoa(seq)}, payload)
+		var cr struct {
+			ChunkDone bool `json:"chunk_done"`
+			Done      bool `json:"done"`
+		}
+		if resp.StatusCode != 200 || json.Unmarshal([]byte(resp.Body), &cr) != nil {
+			want(false, fmt.Sprintf("restore chunk %d", seq), fmt.Sprintf("code=%d %s", resp.StatusCode, resp.Body))
+			return done
+		}
+		done = cr.Done
+		if cr.ChunkDone {
+			break
+		}
+	}
+	return done
+}
+
 // runBigEpicsCondenseE2E exercises the catalog condense against a realistic
 // /epics stream (real-shaped id/updated_at objects, ~2KB each) inside the
 // default pass. The zero-epic default scenarios can't see a wire-shape or
@@ -1099,6 +1374,8 @@ func resetE2E() {
 	memberCalls, iterationCalls = nil, nil
 	projectsBody, searchBody = defaultProjectsBody, defaultSearchBody
 	workflowsBody, teamsBody = defaultWorkflowsBody, defaultTeamsBody
+	membersBody, epicsBody = `[]`, `[]`
+	searchWindowFilter, epicComments = false, map[string]string{}
 	deletedStories, getStoryCalls = map[string]bool{}, nil
 	// Tombstone markers and comment-dedup records leak between E2E runs
 	// (the sweep tests leave both behind): a stale tomb:story:102 silently

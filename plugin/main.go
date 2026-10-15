@@ -92,6 +92,22 @@ func route(req HTTPRequest) HTTPResponse {
 		return handleResetState()
 	case "POST /sync/purge":
 		return handlePurgeSync()
+	case "POST /dump/start":
+		return handleDumpStart(req.Body)
+	case "POST /dump/tick":
+		return runDumpTick()
+	case "GET /dump/status":
+		return handleDumpStatus()
+	case "GET /dump/piece":
+		return handleDumpPiece(req.Query)
+	case "POST /dump/discard":
+		return handleDumpDiscard()
+	case "GET /restore/status":
+		return handleRestoreStatus()
+	case "POST /restore/chunk":
+		return handleRestoreChunk(req.Query, req.Body)
+	case "POST /restore/discard":
+		return handleRestoreDiscard()
 	default:
 		body, _ := json.Marshal(map[string]string{"error": "route not found: " + req.Method + " " + req.Path})
 		return HTTPResponse{StatusCode: 404, Headers: jsonHeaders, Body: string(body)}

@@ -1,6 +1,6 @@
 {
   "name": "shortcut",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Shortcut \u2192 Windshift one-way sync: catalog + windowed story/comment import, per-project workspaces, delete tombstones, admin control",
   "author": "NSXBet",
   "entryPoint": "plugin.wasm",
@@ -39,6 +39,46 @@
       "method": "POST",
       "path": "/sync/purge",
       "description": "Delete everything the sync ever created (items, plugin KV, workspaces, team workflows) for a clean re-import"
+    },
+    {
+      "method": "POST",
+      "path": "/dump/start",
+      "description": "Begin a full-account dump: freezes nothing, state persists in plugin KV, ticks stream entities into file pieces"
+    },
+    {
+      "method": "POST",
+      "path": "/dump/tick",
+      "description": "Run one dump tick within the invocation budget and return the resulting state"
+    },
+    {
+      "method": "GET",
+      "path": "/dump/status",
+      "description": "Current dump progress: phase, cursor, piece count, counts per entity"
+    },
+    {
+      "method": "GET",
+      "path": "/dump/piece",
+      "description": "Fetch one piece of the assembled NDJSON dump file (?n=0..pieces-1); while a dump runs, n=pieces serves the open in-memory buffer, so partial files download before completion"
+    },
+    {
+      "method": "POST",
+      "path": "/dump/discard",
+      "description": "Delete dump state and every piece from KV (used after a corrupt pause or completed restore)"
+    },
+    {
+      "method": "GET",
+      "path": "/restore/status",
+      "description": "Current restore progress: phase, chunk cursor, counts per entity, recent errors"
+    },
+    {
+      "method": "POST",
+      "path": "/restore/chunk",
+      "description": "Replay one dump-file chunk (?seq=n); re-post the same chunk until the response marks it consumed, then post the next"
+    },
+    {
+      "method": "POST",
+      "path": "/restore/discard",
+      "description": "Delete restore state (used to abandon or restart a restore)"
     }
   ],
   "schedules": [
@@ -46,6 +86,11 @@
       "id": "sync",
       "every": "5m",
       "handler": "sync_tick"
+    },
+    {
+      "id": "dump",
+      "every": "10s",
+      "handler": "dump_tick"
     }
   ],
   "extensions": [

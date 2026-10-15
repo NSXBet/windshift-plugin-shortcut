@@ -65,6 +65,14 @@ type engine struct {
 	teams         map[int64]*team  // Shortcut team id → team (name + states, from /teams)
 	wsByProject   map[int64]string // project id → resolved windshift workspace id (per tick cache)
 	wsByTeam      map[int64]string // team id → resolved windshift workspace id (per tick cache)
+
+	// Restore mode: entity bodies come from the dump file instead of the
+	// live API (see restore.go). The engine never fetches when offline is
+	// set — body lookups go through the membersByID/iterationsByID maps and
+	// parent epics resolve from the dump's epic section.
+	offline        bool
+	membersByID    map[string]*shortcutMember
+	iterationsByID map[int64]*shortcutIteration
 }
 
 func (e *engine) run() {
@@ -186,7 +194,7 @@ func (e *engine) syncEpics() (paused bool, err error) {
 		e.st.CatalogEpicIdx = i + 1
 		if e.tombstoned("epic", m.ID) {
 			e.st.Counts.Skipped++
-		} else if err := e.upsertEpicMeta(m); err != nil {
+		} else if _, err := e.upsertEpicMeta(m, nil); err != nil {
 			if isAborted(err) {
 				// Transport abort: rewind so this epic retries next tick.
 				e.st.CatalogEpicIdx = i
@@ -203,70 +211,91 @@ func (e *engine) syncEpics() (paused bool, err error) {
 	return false, nil
 }
 
-// upsertEpicMeta re-verifies one frozen epic: lookup skip, lazy body fetch
-// only for epics that are new or changed since their last sync.
-func (e *engine) upsertEpicMeta(m epicMeta) error {
+// upsertEpicMeta re-verifies one frozen epic: lookup skip, body fetch
+// (skipped when ep is passed — the restore path already carries the dump's
+// body), upsert. Returns the windshift item id ("" when skipped or dry-run).
+func (e *engine) upsertEpicMeta(m epicMeta, ep *epic) (string, error) {
 	if e.cfg.DryRun {
 		e.st.Counts.Created++
 		logInfo("dry-run: epic " + strconv.FormatInt(m.ID, 10) + " would upsert")
-		return nil
+		return "", nil
 	}
 	lk, err := itemLookup("epic", m.ID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	skip, err := logic.ShouldSkip(lk.Found, lk.LastSyncedAt, m.UpdatedAt)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if skip {
 		e.st.Counts.Skipped++
-		return nil
+		return "", nil
 	}
-	ep, err := e.client.getEpic(m.ID)
-	if err != nil {
-		return fmt.Errorf("epic %d: %w", m.ID, err)
+	if ep == nil {
+		ep, err = e.client.getEpic(m.ID)
+		if err != nil {
+			return "", fmt.Errorf("epic %d: %w", m.ID, err)
+		}
 	}
-	// Epics are org-level (all 2484 carry no team in this org): they always
-	// land in the configured workspace, regardless of mode.
+	return e.upsertEpicBody(ep)
+}
+
+// upsertEpicBody upserts an already-fetched epic body. Epics are org-level
+// (all 2484 carry no team in this org): they always land in the configured
+// workspace, regardless of mode. Returns the windshift item id.
+func (e *engine) upsertEpicBody(ep *epic) (string, error) {
 	resp, err := itemUpsert(e.epicRequest(*ep, e.cfg.WorkspaceID))
 	if err != nil {
-		return err
+		return "", err
 	}
 	e.countUpsert(resp)
-	return nil
+	return resp.ItemID, nil
+}
+
+// mapsPayload is the MapsJSON cache shape: state/project/team lookups the
+// story import needs. buildMaps writes it; the restore engine serializes the
+// same shape from dump catalog records.
+type mapsPayload struct {
+	StateType     map[int64]string   `json:"st"`
+	StateName     map[int64]string   `json:"sn"`
+	EpicStateType map[int64]string   `json:"et"`
+	ProjectName   map[int64]string   `json:"pn"`
+	TeamByState   map[int64]int64    `json:"ts"`
+	Teams         map[int64]teamMeta `json:"tt"`
+}
+
+// adoptMapsCache installs a decoded maps cache into the engine and seeds the
+// per-mode workspace caches. Returns false when the payload is incomplete
+// (missing maps, or team mode without the cached team roster from an older
+// build) — buildMaps then refetches.
+func (e *engine) adoptMapsCache(p mapsPayload) bool {
+	teamsOK := e.cfg.WorkspaceMode != "team" || p.Teams != nil
+	if p.StateType == nil || p.StateName == nil || p.EpicStateType == nil || p.ProjectName == nil || !teamsOK {
+		return false
+	}
+	e.stateType = p.StateType
+	e.stateName = p.StateName
+	e.epicStateType = p.EpicStateType
+	e.projectName = p.ProjectName
+	e.teamByState = p.TeamByState
+	if e.cfg.WorkspaceMode == "per_project" {
+		e.wsByProject = make(map[int64]string, len(p.ProjectName))
+	}
+	if e.cfg.WorkspaceMode == "team" {
+		e.teams = make(map[int64]*team, len(p.Teams))
+		for id, tm := range p.Teams {
+			e.teams[id] = &team{Name: tm.Name, States: tm.States}
+		}
+		e.wsByTeam = make(map[int64]string, len(p.Teams))
+	}
+	return true
 }
 
 func (e *engine) buildMaps() error {
 	if e.st.MapsJSON != "" {
-		var m struct {
-			StateType     map[int64]string   `json:"st"`
-			StateName     map[int64]string   `json:"sn"`
-			EpicStateType map[int64]string   `json:"et"`
-			ProjectName   map[int64]string   `json:"pn"`
-			TeamByState   map[int64]int64    `json:"ts"`
-			Teams         map[int64]teamMeta `json:"tt"`
-		}
-		// Team mode additionally requires the cached team roster: a cache
-		// written by an older build (or another mode) lacks it.
-		teamsOK := e.cfg.WorkspaceMode != "team" || m.Teams != nil
-		if err := json.Unmarshal([]byte(e.st.MapsJSON), &m); err == nil &&
-			m.StateType != nil && m.StateName != nil && m.EpicStateType != nil && m.ProjectName != nil && teamsOK {
-			e.stateType = m.StateType
-			e.stateName = m.StateName
-			e.epicStateType = m.EpicStateType
-			e.projectName = m.ProjectName
-			e.teamByState = m.TeamByState
-			if e.cfg.WorkspaceMode == "per_project" {
-				e.wsByProject = make(map[int64]string, len(m.ProjectName))
-			}
-			if e.cfg.WorkspaceMode == "team" {
-				e.teams = make(map[int64]*team, len(m.Teams))
-				for id, tm := range m.Teams {
-					e.teams[id] = &team{Name: tm.Name, States: tm.States}
-				}
-				e.wsByTeam = make(map[int64]string, len(m.Teams))
-			}
+		var p mapsPayload
+		if err := json.Unmarshal([]byte(e.st.MapsJSON), &p); err == nil && e.adoptMapsCache(p) {
 			return nil
 		}
 		// Corrupt cache: fall through to a fresh fetch.
@@ -311,14 +340,7 @@ func (e *engine) buildMaps() error {
 			return err
 		}
 	}
-	if raw, err := json.Marshal(struct {
-		StateType     map[int64]string   `json:"st"`
-		StateName     map[int64]string   `json:"sn"`
-		EpicStateType map[int64]string   `json:"et"`
-		ProjectName   map[int64]string   `json:"pn"`
-		TeamByState   map[int64]int64    `json:"ts"`
-		Teams         map[int64]teamMeta `json:"tt"`
-	}{e.stateType, e.stateName, e.epicStateType, e.projectName, e.teamByState, e.teamMetas()}); err == nil {
+	if raw, err := json.Marshal(mapsPayload{e.stateType, e.stateName, e.epicStateType, e.projectName, e.teamByState, e.teamMetas()}); err == nil {
 		e.st.MapsJSON = string(raw)
 	}
 	if e.cfg.WorkspaceMode == "per_project" {
@@ -750,7 +772,8 @@ func (e *engine) syncStory(m storyMeta) error {
 		}
 		return err
 	}
-	return e.upsertStory(*s)
+	_, err = e.upsertStory(*s)
+	return err
 }
 
 func (e *engine) watermark() time.Time {
@@ -779,22 +802,25 @@ func (e *engine) backfill() time.Duration {
 	return defaultBackfill
 }
 
-func (e *engine) upsertStory(s story) error {
+// upsertStory imports one story and returns the windshift item id ("" when
+// the upsert was skipped or is a dry-run). The restore path resolves the
+// parent kind from it.
+func (e *engine) upsertStory(s story) (string, error) {
 	if e.cfg.DryRun {
 		e.st.Counts.Created++
 		logInfo("dry-run: story " + strconv.FormatInt(s.ID, 10) + " would upsert")
-		return nil
+		return "", nil
 	}
 	wsID, err := e.resolveWorkspace(s)
 	if err != nil {
-		return err
+		return "", err
 	}
 	req := e.storyRequest(s, wsID)
 	if s.EpicID != nil {
 		parentable, err := e.ensureParentEpic(*s.EpicID)
 		if err != nil {
 			if !isNotFound(err) {
-				return err
+				return "", err
 			}
 			// Parent epic deleted in Shortcut (children outlive it): the
 			// mapping can never appear, so import the child parentless
@@ -807,28 +833,37 @@ func (e *engine) upsertStory(s story) error {
 	}
 	if len(s.OwnerIDs) > 0 {
 		if err := e.ensureMember(s.OwnerIDs[0]); err != nil {
-			return err
+			return "", err
 		}
 		req.AssigneeExternalID = s.OwnerIDs[0]
 	}
 	if s.IterationID != nil && *s.IterationID > 0 {
 		if err := e.ensureIteration(*s.IterationID, wsID); err != nil {
-			return err
+			return "", err
 		}
 		req.IterationExternalID = *s.IterationID
 	}
 	resp, err := itemUpsert(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	e.countUpsert(resp)
-	return nil
+	return resp.ItemID, nil
 }
 
 // ensureMember imports a story's assignee on demand (member_upsert). The
 // core maps member id → user, so stories can carry a real owner without a
 // member roster pass; item-level rejections bubble up as rejections.
 func (e *engine) ensureMember(memberID string) error {
+	if e.offline {
+		// Restore: the dump's members section feeds the lookup; an absent
+		// member (dump ran before the member was created) drops the
+		// assignment exactly like the live 404 path.
+		if m := e.membersByID[memberID]; m != nil {
+			return memberUpsertFrom(*m)
+		}
+		return nil
+	}
 	m, err := e.client.getMember(memberID)
 	if err != nil {
 		if isNotFound(err) {
@@ -857,6 +892,15 @@ func memberUpsertFrom(m shortcutMember) error {
 // workspace (windshift iterations are workspace-local). A missing iteration
 // in Shortcut (404) drops the reference the same way epics do.
 func (e *engine) ensureIteration(iterationID int64, wsID string) error {
+	if e.offline {
+		// Restore: iteration bodies come from the dump's lines, which the
+		// dump emits BEFORE their window's stories (freezeWindow) so the
+		// buffer always has them when the story upsert resolves.
+		if it := e.iterationsByID[iterationID]; it != nil {
+			return iterationUpsertFrom(*it, wsID)
+		}
+		return nil
+	}
 	it, err := e.client.getIteration(iterationID)
 	if err != nil {
 		if isNotFound(err) {
@@ -864,7 +908,13 @@ func (e *engine) ensureIteration(iterationID int64, wsID string) error {
 		}
 		return fmt.Errorf("iteration %d: %w", iterationID, err)
 	}
-	_, err = iterationUpsert(iterationUpsertRequest{
+	return iterationUpsertFrom(*it, wsID)
+}
+
+// iterationUpsertFrom imports an already-fetched iteration (the shared
+// on-demand and restore path), scoped to the story's workspace.
+func iterationUpsertFrom(it shortcutIteration, wsID string) error {
+	_, err := iterationUpsert(iterationUpsertRequest{
 		ExternalID: it.ID,
 		Name:       it.Name,
 		StartDate:  it.StartDate,
@@ -896,15 +946,19 @@ func (e *engine) ensureParentEpic(epicID int64) (bool, error) {
 	if lk.Found {
 		return true, nil
 	}
+	if e.offline {
+		// Restore: the dump's epic section is applied first, so a child
+		// story's epic either mapped during that pass or is genuinely
+		// missing (deleted epic) — import the child parentless either way.
+		return false, nil
+	}
 	ep, err := e.client.getEpic(epicID)
 	if err != nil {
 		return false, fmt.Errorf("parent epic %d: %w", epicID, err)
 	}
-	resp, err := itemUpsert(e.epicRequest(*ep, e.cfg.WorkspaceID))
-	if err != nil {
+	if _, err := e.upsertEpicBody(ep); err != nil {
 		return false, fmt.Errorf("parent epic %d: %w", epicID, err)
 	}
-	e.countUpsert(resp)
 	return true, nil
 }
 
@@ -1020,6 +1074,13 @@ func (e *engine) importStoryComments(storyID int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return e.importComments(itemID, cs)
+}
+
+// importComments runs the live-comment loop for an already-resolved story
+// mapping; both the sync's comment pass and the restore path use it.
+// Returns incomplete when the tick budget ran out mid-loop.
+func (e *engine) importComments(itemID int, cs []storyComment) (bool, error) {
 	for _, c := range cs {
 		if c.Deleted || c.Text == "" {
 			continue
@@ -1086,6 +1147,12 @@ func (e *engine) countUpsert(resp itemUpsertResponse) {
 // marker lookup failures are treated as not-tombstoned so a bad KV read can
 // never silently hide a live story.
 func (e *engine) tombstoned(kind string, id int64) bool {
+	if e.offline {
+		// Restore replays the dump verbatim: tombstones are Shortcut-side
+		// deletion markers, and entities deleted in Shortcut are absent
+		// from the dump, so the markers are meaningless mid-restore.
+		return false
+	}
 	_, found, err := kvGetString(tombstoneKey(kind, id))
 	return err == nil && found
 }
@@ -1120,7 +1187,11 @@ func (e *engine) recordError(err error) {
 	if len(e.st.LastErrors) > maxLastErrors {
 		e.st.LastErrors = e.st.LastErrors[len(e.st.LastErrors)-maxLastErrors:]
 	}
-	logInfo("sync error: " + msg)
+	if e.offline {
+		logInfo("restore error: " + msg)
+	} else {
+		logInfo("sync error: " + msg)
+	}
 }
 
 func (e *engine) save() {

@@ -53,6 +53,15 @@ func isNotFound(err error) bool {
 	return errors.As(err, &e) && e.Status == 404
 }
 
+// errRateLimit is the client-side limiter refusing a fetch before it is
+// issued. The dump treats it as a budget pause (cursor already advanced,
+// next tick resumes with a fresh limiter window); the sync surfaces it.
+type errRateLimit struct{ path string }
+
+func (e *errRateLimit) Error() string {
+	return fmt.Sprintf("shortcut %s: local rate budget exhausted (%d/%s)", e.path, rateLimitMax, rateLimitWin)
+}
+
 // shortcutClient issues authenticated calls to the configured organization.
 type shortcutClient struct {
 	token      string
@@ -75,7 +84,7 @@ func newShortcutClient(cfg *Config) *shortcutClient {
 
 func (c *shortcutClient) do(method, path string, body []byte) ([]byte, error) {
 	if !c.limiter.Allow(c.now()) {
-		return nil, fmt.Errorf("shortcut %s: local rate budget exhausted (%d/%s)", path, rateLimitMax, rateLimitWin)
+		return nil, &errRateLimit{path: path}
 	}
 	req := httpFetchRequest{
 		Method:    method,
@@ -122,6 +131,7 @@ type searchStoriesReq struct {
 	ProjectIDs          []int64 `json:"project_ids,omitempty"`
 	UpdatedAtStart      string  `json:"updated_at_start,omitempty"` // RFC3339 UTC
 	UpdatedAtEnd        string  `json:"updated_at_end,omitempty"`
+	Archived            bool    `json:"archived,omitempty"` // dump's archived-stories pass only
 	IncludesDescription bool    `json:"includes_description"`
 }
 
@@ -170,10 +180,18 @@ type storyMeta struct {
 }
 
 func (c *shortcutClient) searchStories(start, end time.Time) ([]story, error) {
+	return c.searchStoriesArchived(start, end, false)
+}
+
+// searchStoriesArchived searches one updated-at window. The dump uses
+// archived=true as a second pass per window so archived stories land in the
+// file too; the live sync keeps the default (active only).
+func (c *shortcutClient) searchStoriesArchived(start, end time.Time, archived bool) ([]story, error) {
 	body, err := json.Marshal(searchStoriesReq{
 		ProjectIDs:     c.projectIDs,
 		UpdatedAtStart: start.UTC().Format(time.RFC3339),
 		UpdatedAtEnd:   end.UTC().Format(time.RFC3339),
+		Archived:       archived,
 		// Descriptions stay out: the condensed window keeps only id+stamp and
 		// syncStory fetches full bodies lazily — carrying every description
 		// made the NSX window search ~1.8 MB, which Shortcut serves slow
